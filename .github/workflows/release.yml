@@ -1,0 +1,117 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Setup Rust
+        uses: dtolnay/rust-action@stable
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Install Python dependencies
+        run: |
+          cd python
+          pip install -r requirements.txt
+
+      - name: Build Tauri app
+        run: npm run tauri build
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+
+      - name: Prepare release files
+        shell: powershell
+        run: |
+          # Create release directory
+          New-Item -ItemType Directory -Force -Path "release/ScreenSafe"
+          
+          # Copy the NSIS installer output (contains exe + resources)
+          $msiPath = Get-ChildItem -Path "src-tauri/target/release/bundle/nsis/*.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+          if ($msiPath) {
+            Copy-Item $msiPath.FullName -Destination "release/"
+          }
+          
+          # Copy portable executable and dependencies
+          Copy-Item "src-tauri/target/release/ScreenSafe.exe" -Destination "release/ScreenSafe/"
+          
+          # Copy Python sidecar
+          Copy-Item -Path "python" -Destination "release/ScreenSafe/python" -Recurse
+          
+          # Copy required assets
+          if (Test-Path "assets") {
+            Copy-Item -Path "assets" -Destination "release/ScreenSafe/assets" -Recurse
+          }
+          
+          # Create zip of portable version
+          Compress-Archive -Path "release/ScreenSafe/*" -DestinationPath "release/ScreenSafe-${{ github.ref_name }}-windows-x64-portable.zip"
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-release
+          path: |
+            release/*.zip
+            release/*.exe
+
+  create-release:
+    needs: build-windows
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-release
+          path: release
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: ScreenSafe ${{ github.ref_name }}
+          body: |
+            ## ScreenSafe ${{ github.ref_name }}
+            
+            Privacy-first video redaction tool - automatically detect and blur sensitive information in screen recordings.
+            
+            ### Downloads
+            - **Portable ZIP**: Contains executable + Python sidecar. Extract and run `ScreenSafe.exe`
+            - **Installer**: Standard Windows installer
+            
+            ### Requirements
+            - Windows 10/11 (x64)
+            - Python 3.10+ (for OCR features)
+            
+            See [CHANGELOG.md](https://github.com/xersbtt/ScreenSafe/blob/main/CHANGELOG.md) for details.
+          files: |
+            release/*.zip
+            release/*.exe
+          draft: false
+          prerelease: false
