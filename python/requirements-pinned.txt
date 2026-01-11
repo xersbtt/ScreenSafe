@@ -1,0 +1,23 @@
+# ScreenSafe AI Pipeline - Simplified Dependencies
+# Use: pip install -r requirements-pinned.txt
+
+# Core
+numpy==1.26.4
+opencv-python-headless==4.9.0.80
+Pillow==10.2.0
+
+# OCR - EasyOCR (pre-built wheels, no compilation needed)
+easyocr==1.7.1
+torch>=2.0.0
+torchvision>=0.15.0
+
+# PII Detection - regex only (skip Presidio/spacy for now to avoid issues)
+# We have regex patterns built into pii_classifier.py
+
+# Object Tracking
+norfair==2.2.0
+
+# IPC & Utilities
+websockets==12.0
+pydantic==2.6.1
+tqdm==4.66.2

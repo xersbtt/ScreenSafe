@@ -1,0 +1,28 @@
+# ScreenSafe AI Pipeline Dependencies
+# Install with: pip install -r requirements.txt
+
+# Core
+onnxruntime>=1.17.0        # CPU inference engine
+onnxruntime-gpu>=1.17.0    # GPU inference (optional, install separately if CUDA available)
+numpy>=1.24.0
+opencv-python>=4.8.0       # Image processing
+Pillow>=10.0.0             # Image I/O
+
+# OCR
+paddlepaddle>=2.5.0        # PaddlePaddle framework
+paddleocr>=2.7.0           # PaddleOCR for text detection/recognition
+
+# PII Detection
+presidio-analyzer>=2.2.0   # Microsoft Presidio for PII classification
+spacy>=3.7.0               # NLP for named entity recognition
+
+# Object Detection
+ultralytics>=8.0.0         # YOLOv8 for object detection
+
+# Object Tracking
+norfair>=2.2.0             # Lightweight object tracking
+
+# IPC & Utilities  
+websockets>=12.0           # Communication with Tauri frontend
+pydantic>=2.0              # Data validation
+tqdm>=4.65.0               # Progress bars
