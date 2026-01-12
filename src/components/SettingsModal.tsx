@@ -149,7 +149,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
                     {/* Section divider */}
                     <div className="settings-divider">
-                        <span>Advanced Export Settings</span>
+                        <span>Advanced Scan Settings</span>
                     </div>
 
                     {/* Scan Interval */}

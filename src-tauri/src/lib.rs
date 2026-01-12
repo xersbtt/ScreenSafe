@@ -51,8 +51,11 @@ fn stop_python_sidecar() {
     if let Ok(mut guard) = PYTHON_PROCESS.lock() {
         if let Some(mut child) = guard.take() {
             println!("[ScreenSafe] Stopping Python sidecar (PID: {})", child.id());
-            let _ = child.kill();
-            let _ = child.wait();
+            // Move wait to a separate thread to avoid blocking main thread
+            std::thread::spawn(move || {
+                let _ = child.kill();
+                let _ = child.wait();
+            });
         }
     }
 }

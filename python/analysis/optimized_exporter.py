@@ -342,7 +342,8 @@ class OptimizedVideoExporter:
                 if not ret:
                     break
                 
-                current_time = frame_number / self.video_info.fps
+                # Get actual timestamp from video (accurate for VFR videos)
+                current_time = cap.get(cv2.CAP_PROP_POS_MSEC) / 1000.0  # Convert ms to seconds
                 
                 # Check if we're in a scan zone
                 in_scan_zone = self._is_in_scan_zone(current_time)
@@ -545,39 +546,38 @@ class OptimizedVideoExporter:
         return mean_diff > self._motion_threshold
     
     def _build_frame_map(self, detections: List[Detection]) -> Dict[int, List[Detection]]:
-        """Build a map of frame_number -> detections for fast lookup."""
-        frame_map: Dict[int, List[Detection]] = {}
+        """Deprecated: Frame-map approach causes sync issues with VFR videos."""
+        return {}
+    
+    def _get_active_detections(self, frame_map, detections, frame_number, current_time) -> List[Detection]:
+        """Get all detections active at the current timestamp (VFR safe)."""
+        active_dets = []
+        
+        # Use simple epsilon for float comparison safety
+        epsilon = 0.05  # 50ms tolerance
         
         for det in detections:
             if not det.is_redacted:
                 continue
-            
-            for frame in range(det.start_frame, det.end_frame + 1):
-                if frame not in frame_map:
-                    frame_map[frame] = []
-                frame_map[frame].append(det)
-        
-        return frame_map
-    
-    def _get_active_detections(self, frame_map, detections, frame_number, current_time) -> List[Detection]:
-        """Get all detections active in this frame."""
-        active_dets = frame_map.get(frame_number, []).copy()
-        
-        for det in detections:
-            if det.is_redacted and det.start_time <= current_time <= det.end_time:
-                if det not in active_dets:
-                    active_dets.append(det)
+                
+            # STRICT timestamp check - ignore frame numbers completely for VFR correctness
+            # We use a small epsilon to avoid floating point misses at boundaries
+            if (det.start_time - epsilon) <= current_time <= (det.end_time + epsilon):
+                active_dets.append(det)
         
         return active_dets
     
     def _apply_blurs(self, frame: np.ndarray, detections: List[Detection],
                      blur_strength: int, frame_number: int = 0) -> np.ndarray:
-        """Apply Gaussian blur to detected regions."""
+        """Apply obfuscation (blur or blackout) to detected regions."""
         height, width = frame.shape[:2]
         blur_kernel = (blur_strength, blur_strength)
         
         for det in detections:
-            bbox = self._get_bbox_at_frame(det, frame_number) or det.bbox
+            # For VFR/timestamp sync, we should prefer the bbox from the specific frame if available (tracking),
+            # but currently detections assume static bbox unless track_id/frame_positions is implemented.
+            # For now, we use the detection's main bbox which is usually correct for the segment.
+            bbox = det.bbox
             
             x1 = max(0, int(bbox.x * width))
             y1 = max(0, int(bbox.y * height))
@@ -588,12 +588,19 @@ class OptimizedVideoExporter:
                 continue
             
             try:
-                roi = frame[y1:y2, x1:x2]
-                if roi.size > 0:
-                    blurred = cv2.GaussianBlur(roi, blur_kernel, BLUR_SIGMA)
-                    frame[y1:y2, x1:x2] = blurred
+                # Handle Blackout vs Blur
+                # Check for "blackout" type (using string check to match frontend/JSON)
+                if getattr(det, 'type', '') == 'blackout' or det.type == 'blackout':
+                    # Draw solid black rectangle
+                    cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 0, 0), -1)
+                else:
+                    # Apply Gaussian Blur
+                    roi = frame[y1:y2, x1:x2]
+                    if roi.size > 0:
+                        blurred = cv2.GaussianBlur(roi, blur_kernel, BLUR_SIGMA)
+                        frame[y1:y2, x1:x2] = blurred
             except Exception as e:
-                logger.warning(f"Failed to blur region: {e}")
+                logger.warning(f"Failed to apply obfuscation to region: {e}")
         
         return frame
     
@@ -707,10 +714,20 @@ class OptimizedVideoExporter:
                 else:
                     continue
                 
+                # Clamp bbox to stay within normalized 0-1 range
+                blur_x = max(0.0, min(1.0, blur_x))
+                blur_y = max(0.0, min(1.0, blur_y))
+                # Ensure width/height don't extend beyond frame boundary
+                blur_width = min(blur_width, 1.0 - blur_x)
+                blur_height = min(blur_height, 1.0 - blur_y)
+                # Skip if resulting box is too small
+                if blur_width <= 0 or blur_height <= 0:
+                    continue
+                
                 blur_boxes.append((
                     BoundingBox(
-                        x=max(0, blur_x),
-                        y=max(0, blur_y),
+                        x=blur_x,
+                        y=blur_y,
                         width=blur_width,
                         height=blur_height
                     ),
@@ -748,15 +765,16 @@ class OptimizedVideoExporter:
                         break
             
             if matched_keyword:
-                blur_boxes.append((
-                    BoundingBox(
-                        x=bbox['x'],
-                        y=bbox['y'],
-                        width=bbox['width'],
-                        height=bbox['height']
-                    ),
-                    matched_keyword
-                ))
+                # Clamp bbox values to 0-1 range
+                bx = max(0.0, min(1.0, bbox['x']))
+                by = max(0.0, min(1.0, bbox['y']))
+                bw = min(bbox['width'], 1.0 - bx)
+                bh = min(bbox['height'], 1.0 - by)
+                if bw > 0 and bh > 0:
+                    blur_boxes.append((
+                        BoundingBox(x=bx, y=by, width=bw, height=bh),
+                        matched_keyword
+                    ))
         
         return blur_boxes  # List of (BoundingBox, keyword) tuples
     
@@ -1049,13 +1067,18 @@ def scan_video(video_path: str,
     
     logger.info(f"Scanning video: {total_frames} frames (scan interval: {scan_interval})")
     
+    # Initial progress update so UI shows something immediately
+    if progress_callback:
+        progress_callback(0, f"Starting scan of {total_frames} frames...")
+    
     try:
         while True:
             ret, frame = cap.read()
             if not ret:
                 break
             
-            current_time = frame_number / video_info.fps
+            # Get actual timestamp from video (accurate for VFR videos)
+            current_time = cap.get(cv2.CAP_PROP_POS_MSEC) / 1000.0  # Convert ms to seconds
             
             # Check if we're in a scan zone
             is_in_zone = scanner._is_in_scan_zone(current_time)
@@ -1123,8 +1146,8 @@ def scan_video(video_path: str,
             
             frame_number += 1
             
-            # Progress update
-            if frame_number % 100 == 0 and progress_callback:
+            # Progress update - every 30 frames for responsive feedback
+            if frame_number % 30 == 0 and progress_callback:
                 progress = (frame_number / total_frames) * 100
                 elapsed = time.time() - start_time
                 fps_rate = frame_number / elapsed if elapsed > 0 else 0

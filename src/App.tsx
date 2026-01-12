@@ -294,7 +294,8 @@ function App() {
 
   // Wrapper to check for unsaved changes before new project
   const handleNewProjectWithConfirm = useCallback(() => {
-    if (hasUnsavedChanges) {
+    // Use Ref to avoid stale closure
+    if (hasUnsavedChangesRef.current) {
       setConfirmDialog({
         isOpen: true,
         title: 'Unsaved Changes',
@@ -312,7 +313,7 @@ function App() {
     } else {
       handleNewProject();
     }
-  }, [hasUnsavedChanges, handleNewProject]);
+  }, [handleNewProject]);
 
   // Load New Video - keep current settings, load a different video
   const handleLoadNewVideoCore = useCallback(async () => {
@@ -326,24 +327,24 @@ function App() {
       });
       if (result) {
         const path = result as string;
-        // Clear current video and detections but keep settings
+        // Clear detections but keep settings
         setDetections([]);
-        setFilePath(path);
-        setVideoUrl(`asset://localhost/${encodeURIComponent(path)}`);
         setExportProgress({ isExporting: false, progress: 0, stage: '', eta: '' });
-        setMode('editing');
         setHasUnsavedChanges(false);
+        // Use handlePathSelect for consistent URL generation (fixes video reload bug)
+        handlePathSelect(path);
         setToastMessage('📼 Video loaded - settings preserved');
       }
     } catch (err) {
       console.error('Failed to load video:', err);
       setToastMessage('❌ Failed to load video');
     }
-  }, []);
+  }, [handlePathSelect]);
 
   // Wrapper to check for unsaved changes before loading new video
   const handleLoadNewVideo = useCallback(() => {
-    if (hasUnsavedChanges) {
+    // Use Ref to avoid stale closure
+    if (hasUnsavedChangesRef.current) {
       setConfirmDialog({
         isOpen: true,
         title: 'Unsaved Changes',
@@ -361,7 +362,7 @@ function App() {
     } else {
       handleLoadNewVideoCore();
     }
-  }, [hasUnsavedChanges, handleLoadNewVideoCore]);
+  }, [handleLoadNewVideoCore]);
 
   // Video control handlers
   const handlePlay = useCallback(() => {
@@ -428,8 +429,12 @@ function App() {
       setSelectedDetectionId(null);
     } else {
       setSelectedDetectionId(detection.id);
+      // Auto-switch to detections tab to show and scroll to the item
+      if (sidebarTab !== 'detections') {
+        setSidebarTab('detections');
+      }
     }
-  }, [selectedDetectionId]);
+  }, [selectedDetectionId, sidebarTab]);
 
   // Config handlers - sync to Python backend
   const handleWatchListChange = useCallback((items: WatchItem[]) => {
@@ -580,13 +585,14 @@ function App() {
   const handleAnchorBoxDrawn = useCallback((anchorBox: { x: number; y: number; width: number; height: number }) => {
     if (anchorPickStep !== 'pickText' || !_filePath) return;
 
-    const fps = 30; // Assume 30fps
-    const frameNumber = Math.floor(videoState.currentTime * fps);
+    // Send timestamp directly - no fps assumption needed
+    // This properly supports VFR (Variable Frame Rate) videos
+    const timestamp = videoState.currentTime;
 
     console.log('[App] OCR-ing anchor region:', anchorBox);
     setToastMessage('🔍 Detecting text in region...');
 
-    getTextInRegion(_filePath, frameNumber, anchorBox, (text, region) => {
+    getTextInRegion(_filePath, timestamp, anchorBox, (text, region) => {
       console.log('[App] Got region text:', text);
       if (text && text.trim().length > 0) {
         setPickedAnchorText(text);
@@ -667,10 +673,12 @@ function App() {
         gap = 0;
       }
     }
-
-    // Convert normalized dimensions to approximate pixel values
-    const width = Math.round(blurBox.width * 1920); // Assume 1920 width
-    const height = Math.round(blurBox.height * 1080); // Assume 1080 height
+    // Convert normalized dimensions to pixel values using ACTUAL video dimensions
+    const videoElement = videoPlayerRef.current?.getVideoElement();
+    const videoWidth = videoElement?.videoWidth || 1920;
+    const videoHeight = videoElement?.videoHeight || 1080;
+    const width = Math.round(blurBox.width * videoWidth);
+    const height = Math.round(blurBox.height * videoHeight);
 
     // Create the new anchor
     const newAnchor: Anchor = {
@@ -907,6 +915,10 @@ function App() {
             } else {
               setToastMessage('✅ Scan complete! No blur regions detected. Add manual blur boxes or check your anchors.');
             }
+
+            // Auto-switch to detections tab to show results
+            setSidebarTab('detections');
+
             setTimeout(() => setToastMessage(null), 5000);
           },
           onError: (error) => {
@@ -1079,12 +1091,12 @@ function App() {
     if (_filePath) {
       try {
         const { trackRegion } = await import('./lib/tauri');
-        const fps = 30;
-        const frameNumber = Math.floor(frameTime * fps);
+        // Send timestamp directly - no fps assumption (VFR support)
+        const timestamp = frameTime;
 
-        console.log('[App] Starting motion tracking for', detectionId, 'at frame', frameNumber);
+        console.log('[App] Starting motion tracking for', detectionId, 'at', timestamp, 's');
 
-        await trackRegion(_filePath, detectionId, bbox, frameNumber, (result) => {
+        await trackRegion(_filePath, detectionId, bbox, timestamp, (result) => {
           console.log('[App] Motion tracking result:', result.framePositions?.length || 0, 'positions');
 
           // Update detection with tracked time range and motion positions
@@ -1717,7 +1729,7 @@ function App() {
             <div className="about-content">
               <img src="/assets/icon.png" alt="ScreenSafe" className="about-icon" />
               <h3>ScreenSafe</h3>
-              <p className="about-version">Version 1.0.0</p>
+              <p className="about-version">Version 1.0.1</p>
               <p className="about-tagline">Privacy-first video redaction tool</p>
               <p className="about-description">
                 Automatically detect and blur sensitive information in screen recordings before sharing.

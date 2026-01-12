@@ -398,19 +398,19 @@ export async function startExport(
 }
 
 /**
- * Track a region bidirectionally through the video
+ * Track a region forward through the video to find when content disappears
  * 
  * @param videoPath - Path to video file
  * @param detectionId - ID of the detection to update
  * @param bbox - Normalized bounding box {x, y, width, height}
- * @param frameNumber - Frame number where region was selected
+ * @param timestamp - Timestamp in seconds where region was selected
  * @param callback - Called with tracking result
  */
 export async function trackRegion(
     videoPath: string,
     detectionId: string,
     bbox: { x: number; y: number; width: number; height: number },
-    frameNumber: number,
+    timestamp: number,  // Seconds (supports VFR videos)
     callback: TrackResultCallback
 ): Promise<void> {
     // Set callback
@@ -420,12 +420,12 @@ export async function trackRegion(
     await connectSidecar();
 
     // Send track request
-    console.log('[Tauri] Starting region tracking:', { detectionId, bbox, frameNumber });
+    console.log('[Tauri] Starting region tracking:', { detectionId, bbox, timestamp });
     sendMessage('track_object', {
         video_path: videoPath,
         detection_id: detectionId,
         bbox: bbox,
-        frame_number: frameNumber,
+        timestamp: timestamp,  // Send timestamp instead of frame_number
     });
 }
 
@@ -545,7 +545,7 @@ let onTextAtClick: ((regions: TextRegion[]) => void) | null = null;
 
 export async function getTextAtClick(
     videoPath: string,
-    frameNumber: number,
+    timestamp: number,  // Seconds (supports VFR videos)
     clickX: number,  // Normalized 0-1
     clickY: number,  // Normalized 0-1
     callback: (regions: TextRegion[]) => void
@@ -554,10 +554,10 @@ export async function getTextAtClick(
 
     onTextAtClick = callback;
 
-    console.log('[Tauri] Getting text at click:', { clickX, clickY, frameNumber });
+    console.log('[Tauri] Getting text at click:', { clickX, clickY, timestamp });
     sendMessage('get_text_at_click', {
         video_path: videoPath,
-        frame_number: frameNumber,
+        timestamp: timestamp,
         click_x: clickX,
         click_y: clickY,
     });
@@ -570,7 +570,7 @@ let onTextInRegion: ((text: string, region: { x: number; y: number; width: numbe
 
 export async function getTextInRegion(
     videoPath: string,
-    frameNumber: number,
+    timestamp: number,  // Seconds (supports VFR videos)
     region: { x: number; y: number; width: number; height: number },
     callback: (text: string, region: { x: number; y: number; width: number; height: number }) => void
 ): Promise<void> {
@@ -578,10 +578,10 @@ export async function getTextInRegion(
 
     onTextInRegion = callback;
 
-    console.log('[Tauri] Getting text in region:', region);
+    console.log('[Tauri] Getting text in region:', region, 'at', timestamp, 's');
     sendMessage('get_text_in_region', {
         video_path: videoPath,
-        frame_number: frameNumber,
+        timestamp: timestamp,
         region: region,
     });
 }

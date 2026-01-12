@@ -424,6 +424,162 @@ def track_region_in_video(
     start_frame: int,
     progress_callback: Optional[Callable[[float, str], None]] = None
 ) -> TrackResult:
-    """Convenience function for content-aware tracking"""
+    """Convenience function for content-aware tracking (bidirectional - legacy)"""
     tracker = ContentTracker(video_path)
     return tracker.track_region(bbox, start_frame, progress_callback)
+
+
+def track_region_forward(
+    video_path: str,
+    bbox: Tuple[float, float, float, float],  # Normalized (x, y, w, h)
+    start_timestamp: float,  # Seconds (VFR compatible)
+    progress_callback: Optional[Callable[[float, str], None]] = None
+) -> TrackResult:
+    """
+    Forward-only content tracking using timestamp-based seeking.
+    
+    VFR Compatible: Uses CAP_PROP_POS_MSEC for accurate timestamp seeking.
+    
+    Args:
+        video_path: Path to video file
+        bbox: Normalized bounding box (x, y, width, height)
+        start_timestamp: Start time in seconds (user's selected time)
+        progress_callback: Optional progress callback
+        
+    Returns:
+        TrackResult with start_time = user's selected time,
+                         end_time = when content disappears
+    """
+    # Get video info
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        raise ValueError(f"Cannot open video: {video_path}")
+    
+    fps = cap.get(cv2.CAP_PROP_FPS) or 30
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    duration = total_frames / fps
+    
+    # Convert normalized bbox to pixels
+    x = int(bbox[0] * width)
+    y = int(bbox[1] * height)
+    w = int(bbox[2] * width)
+    h = int(bbox[3] * height)
+    pixel_bbox = (x, y, max(10, w), max(10, h))
+    
+    logger.info(f"Forward tracking: start={start_timestamp:.2f}s, bbox={pixel_bbox}")
+    
+    # Seek to start position using timestamp (VFR compatible)
+    cap.set(cv2.CAP_PROP_POS_MSEC, start_timestamp * 1000)
+    ret, ref_frame = cap.read()
+    if not ret:
+        cap.release()
+        # Fallback result
+        return TrackResult(
+            start_frame=int(start_timestamp * fps),
+            end_frame=int(start_timestamp * fps),
+            start_time=start_timestamp,
+            end_time=start_timestamp + 1.0,  # Default 1 second duration
+            confidence=0.0
+        )
+    
+    # Get reference content
+    def extract_region(frame, bbox):
+        x, y, w, h = bbox
+        x = max(0, min(x, frame.shape[1] - 1))
+        y = max(0, min(y, frame.shape[0] - 1))
+        w = min(w, frame.shape[1] - x)
+        h = min(h, frame.shape[0] - y)
+        return frame[y:y+h, x:x+w].copy()
+    
+    def get_region_hash(region):
+        if region.size == 0:
+            return ""
+        try:
+            small = cv2.resize(region, (16, 16))
+            gray = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY) if len(small.shape) == 3 else small
+            avg = gray.mean()
+            bits = (gray > avg).flatten()
+            return ''.join(['1' if b else '0' for b in bits])
+        except:
+            return ""
+    
+    ref_region = extract_region(ref_frame, pixel_bbox)
+    ref_hash = get_region_hash(ref_region)
+    
+    # Start time is user's selected time (no change)
+    result_start_time = start_timestamp
+    result_end_time = start_timestamp
+    
+    # Track forward to find end time
+    sample_interval_sec = 0.25  # Check every 0.25 seconds (4 Hz)
+    consecutive_misses = 0
+    max_consecutive_misses = 3  # Stop after 3 misses (~0.75s)
+    
+    current_time = start_timestamp + sample_interval_sec
+    checks_done = 0
+    max_checks = int((duration - start_timestamp) / sample_interval_sec)
+    
+    if progress_callback:
+        progress_callback(0, "Tracking forward...")
+    
+    while current_time < duration:
+        # Seek using timestamp (VFR compatible)
+        cap.set(cv2.CAP_PROP_POS_MSEC, current_time * 1000)
+        ret, frame = cap.read()
+        if not ret:
+            break
+        
+        # Get actual timestamp from video
+        actual_time = cap.get(cv2.CAP_PROP_POS_MSEC) / 1000.0
+        
+        # Extract region and compare hash
+        region = extract_region(frame, pixel_bbox)
+        hash_val = get_region_hash(region)
+        
+        # Check visual similarity
+        if ref_hash and hash_val and len(ref_hash) == len(hash_val):
+            matches = sum(1 for a, b in zip(ref_hash, hash_val) if a == b)
+            similarity = matches / len(ref_hash)
+            content_matches = similarity >= 0.85  # 85% threshold
+        else:
+            content_matches = False
+        
+        if content_matches:
+            result_end_time = actual_time
+            consecutive_misses = 0
+        else:
+            consecutive_misses += 1
+            if consecutive_misses >= max_consecutive_misses:
+                logger.info(f"Content disappeared at {actual_time:.2f}s")
+                break
+        
+        current_time += sample_interval_sec
+        checks_done += 1
+        
+        if progress_callback and checks_done % 4 == 0:
+            progress = min(100, 100 * (current_time - start_timestamp) / max(1, duration - start_timestamp))
+            progress_callback(progress, f"Checking {actual_time:.1f}s...")
+    
+    cap.release()
+    
+    # Add safety buffer
+    safety_buffer = 0.5  # 0.5 seconds
+    result_end_time = min(duration, result_end_time + safety_buffer)
+    
+    if progress_callback:
+        progress_callback(100, "Complete!")
+    
+    result = TrackResult(
+        start_frame=int(result_start_time * fps),
+        end_frame=int(result_end_time * fps),
+        start_time=result_start_time,
+        end_time=result_end_time,
+        confidence=0.9 if ref_hash else 0.5,
+        text_content=""
+    )
+    
+    logger.info(f"Forward tracking complete: {result.start_time:.2f}s - {result.end_time:.2f}s")
+    
+    return result

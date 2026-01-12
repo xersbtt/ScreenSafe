@@ -24,6 +24,8 @@ class PIIType(str, Enum):
     OTHER = "other"  # For watch list matches
     ANCHOR = "anchor"  # OCR-detected anchor-relative blur
     WATCHLIST = "watchlist"  # OCR-detected watchlist match
+    BLACKOUT = "blackout"  # Solid black overlay (keyboard blocker)
+
 
 
 class BoundingBox(BaseModel):

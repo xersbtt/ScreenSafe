@@ -59,6 +59,9 @@ export const Timeline: React.FC<TimelineProps> = ({
         trackRect: DOMRect | null;
     } | null>(null);
 
+    // Track if a drag operation just finished to prevent click events
+    const justFinishedDragRef = React.useRef(false);
+
     // Handle mouse move during drag
     React.useEffect(() => {
         if (!dragState || !onDetectionTimeChange) return;
@@ -87,6 +90,13 @@ export const Timeline: React.FC<TimelineProps> = ({
         };
 
         const handleMouseUp = () => {
+            // Mark that we just finished dragging to ignore subsequent click
+            justFinishedDragRef.current = true;
+            // Clear the flag after a short delay (enough for click event to fire and be ignored)
+            setTimeout(() => {
+                justFinishedDragRef.current = false;
+            }, 100);
+
             setDragState(null);
         };
 
@@ -97,6 +107,8 @@ export const Timeline: React.FC<TimelineProps> = ({
             window.removeEventListener('mouseup', handleMouseUp);
         };
     }, [dragState, duration, detections, onDetectionTimeChange]);
+
+
 
     // Start dragging an edge
     const handleEdgeDragStart = useCallback((
@@ -314,8 +326,25 @@ export const Timeline: React.FC<TimelineProps> = ({
                                                             }}
                                                             onClick={(e) => {
                                                                 e.stopPropagation();
+
+                                                                // Ignore click if we just finished dragging
+                                                                if (justFinishedDragRef.current) {
+                                                                    return;
+                                                                }
+
                                                                 setContextMenu(null);
-                                                                onSeek(detection.startTime);
+
+                                                                // Seek to actual click position relative to the track
+                                                                const trackBar = e.currentTarget.closest('.timeline-track-bar');
+                                                                if (trackBar) {
+                                                                    const rect = trackBar.getBoundingClientRect();
+                                                                    const percent = (e.clientX - rect.left) / rect.width;
+                                                                    onSeek(percent * duration);
+                                                                } else {
+                                                                    // Fallback
+                                                                    onSeek(detection.startTime);
+                                                                }
+
                                                                 onDetectionClick(detection);
                                                             }}
                                                             onContextMenu={(e) => {

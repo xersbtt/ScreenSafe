@@ -177,27 +177,27 @@ async def handle_message(websocket, message: str):
             )
         
         elif msg_type == WSMessageType.TRACK_OBJECT.value:
-            # Track a region bidirectionally through the video
+            # Track a region forward through the video to find when content disappears
             video_path = payload.get("video_path")
             bbox = payload.get("bbox")  # Normalized {x, y, width, height}
-            frame_number = payload.get("frame_number", 0)
+            timestamp = payload.get("timestamp", 0.0)  # Seconds (supports VFR videos)
             detection_id = payload.get("detection_id")
             
             logger.info(f"=== TRACK_OBJECT received ===")
             logger.info(f"  video_path: {video_path}")
             logger.info(f"  bbox: {bbox}")
-            logger.info(f"  frame_number: {frame_number}")
+            logger.info(f"  timestamp: {timestamp}s")
             logger.info(f"  detection_id: {detection_id}")
             
             if not video_path or not bbox:
                 await send_error(websocket, "Missing video_path or bbox for tracking")
                 return
             
-            logger.info(f"Starting region tracking: frame {frame_number}, bbox {bbox}")
+            logger.info(f"Starting region tracking: timestamp {timestamp}s, bbox {bbox}")
             
             # Start tracking in background
             current_task = asyncio.create_task(
-                run_track(websocket, video_path, bbox, frame_number, detection_id)
+                run_track(websocket, video_path, bbox, timestamp, detection_id)
             )
         
         elif msg_type == "start_scan":
@@ -246,7 +246,7 @@ async def handle_message(websocket, message: str):
         elif msg_type == WSMessageType.PREVIEW_FRAME.value:
             # Analyze a single frame with current config
             video_path = payload.get("video_path")
-            frame_number = payload.get("frame_number", 0)
+            timestamp = payload.get("timestamp", 0.0)  # Seconds (supports VFR videos)
             
             if not video_path:
                 await send_error(websocket, "No video path provided")
@@ -254,13 +254,13 @@ async def handle_message(websocket, message: str):
             
             # Run preview analysis in background
             current_task = asyncio.create_task(
-                run_preview_frame(websocket, video_path, frame_number)
+                run_preview_frame(websocket, video_path, timestamp)
             )
         
         elif msg_type == WSMessageType.GET_TEXT_AT_CLICK.value:
             # Get OCR text at clicked position for anchor selection
             video_path = payload.get("video_path")
-            frame_number = payload.get("frame_number", 0)
+            timestamp = payload.get("timestamp", 0.0)  # Seconds (supports VFR videos)
             click_x = payload.get("click_x", 0.5)  # Normalized 0-1
             click_y = payload.get("click_y", 0.5)  # Normalized 0-1
             
@@ -270,13 +270,13 @@ async def handle_message(websocket, message: str):
             
             # Run text detection in background
             current_task = asyncio.create_task(
-                run_get_text_at_click(websocket, video_path, frame_number, click_x, click_y)
+                run_get_text_at_click(websocket, video_path, timestamp, click_x, click_y)
             )
         
         elif msg_type == WSMessageType.GET_TEXT_IN_REGION.value:
             # Get OCR text from a drawn region
             video_path = payload.get("video_path")
-            frame_number = payload.get("frame_number", 0)
+            timestamp = payload.get("timestamp", 0.0)  # Seconds (supports VFR videos)
             region = payload.get("region", {})  # {x, y, width, height} normalized
             
             if not video_path:
@@ -285,7 +285,7 @@ async def handle_message(websocket, message: str):
             
             # Run text detection in background
             current_task = asyncio.create_task(
-                run_get_text_in_region(websocket, video_path, frame_number, region)
+                run_get_text_in_region(websocket, video_path, timestamp, region)
             )
             
         else:
@@ -568,10 +568,14 @@ async def run_scan(websocket, video_path: str, anchors: list, watch_list: list,
         })
 
 
-async def run_track(websocket, video_path: str, bbox: dict, frame_number: int, detection_id: str):
-    """Run content-aware tracking to find when content appears/disappears"""
+async def run_track(websocket, video_path: str, bbox: dict, timestamp: float, detection_id: str):
+    """Run forward-only content tracking to find when content disappears.
+    
+    Start time = user's selected timestamp (exact)
+    End time = when content is no longer visible (tracked forward)
+    """
     try:
-        from analysis.region_tracker import track_region_in_video
+        from analysis.region_tracker import track_region_forward
         
         loop = asyncio.get_running_loop()
         
@@ -589,15 +593,15 @@ async def run_track(websocket, video_path: str, bbox: dict, frame_number: int, d
         # Convert bbox dict to tuple
         bbox_tuple = (bbox["x"], bbox["y"], bbox["width"], bbox["height"])
         
-        logger.info(f"Starting content tracking at frame {frame_number}")
+        logger.info(f"Starting forward content tracking from {timestamp:.2f}s")
         
-        # Run content-aware tracking (OCR-based) in executor
+        # Run forward-only tracking (timestamp-based, VFR compatible)
         result = await loop.run_in_executor(
             None,
-            lambda: track_region_in_video(
+            lambda: track_region_forward(
                 video_path=video_path,
                 bbox=bbox_tuple,
-                start_frame=frame_number,
+                start_timestamp=timestamp,
                 progress_callback=on_progress
             )
         )
@@ -630,7 +634,7 @@ async def run_track(websocket, video_path: str, bbox: dict, frame_number: int, d
         await send_message(websocket, WSMessageType.ANALYSIS_ERROR, {"error": str(e)})
 
 
-async def run_preview_frame(websocket, video_path: str, frame_number: int):
+async def run_preview_frame(websocket, video_path: str, timestamp: float):
     """Analyze a single frame with current pii_wizard config and return blur regions"""
     try:
         from analysis.pii_wizard import analyze_frame, ProcessingConfig, Anchor
@@ -660,18 +664,18 @@ async def run_preview_frame(websocket, video_path: str, frame_number: int):
             ocr_scale=pii_config.get("ocr_scale", 0.5)
         )
         
-        # Read the frame
+        # Read the frame using timestamp-based seeking (supports VFR videos)
         cap = cv2.VideoCapture(video_path)
-        cap.set(cv2.CAP_PROP_POS_FRAMES, frame_number)
+        cap.set(cv2.CAP_PROP_POS_MSEC, timestamp * 1000)  # Convert seconds to milliseconds
         ret, frame = cap.read()
         cap.release()
         
         if not ret:
-            await send_error(websocket, f"Could not read frame {frame_number}")
+            await send_error(websocket, f"Could not read frame at {timestamp:.2f}s")
             return
         
         # Analyze frame
-        logger.info(f"Preview analyzing frame {frame_number}")
+        logger.info(f"Preview analyzing frame at {timestamp:.2f}s")
         rects, keyboard_detected = await loop.run_in_executor(
             None,
             lambda: analyze_frame(frame, config)
@@ -708,7 +712,7 @@ async def run_preview_frame(websocket, video_path: str, frame_number: int):
         await send_message(websocket, WSMessageType.ANALYSIS_ERROR, {"error": str(e)})
 
 
-async def run_get_text_at_click(websocket, video_path: str, frame_number: int, click_x: float, click_y: float):
+async def run_get_text_at_click(websocket, video_path: str, timestamp: float, click_x: float, click_y: float):
     """Get OCR text at clicked position for anchor selection"""
     try:
         from analysis.pii_wizard import get_text_at_position
@@ -716,14 +720,14 @@ async def run_get_text_at_click(websocket, video_path: str, frame_number: int, c
         
         loop = asyncio.get_running_loop()
         
-        # Read the frame
+        # Read the frame using timestamp-based seeking (supports VFR videos)
         cap = cv2.VideoCapture(video_path)
-        cap.set(cv2.CAP_PROP_POS_FRAMES, frame_number)
+        cap.set(cv2.CAP_PROP_POS_MSEC, timestamp * 1000)  # Convert seconds to milliseconds
         ret, frame = cap.read()
         cap.release()
         
         if not ret:
-            await send_error(websocket, f"Could not read frame {frame_number}")
+            await send_error(websocket, f"Could not read frame at {timestamp:.2f}s")
             return
         
         # Log frame dimensions for debugging
@@ -732,7 +736,7 @@ async def run_get_text_at_click(websocket, video_path: str, frame_number: int, c
         logger.info(f"Click position in pixels: ({int(click_x * w)}, {int(click_y * h)})")
         
         # Get text at click position (1.0 scale for best accuracy)
-        logger.info(f"Getting text at click ({click_x:.3f}, {click_y:.3f}) on frame {frame_number}")
+        logger.info(f"Getting text at click ({click_x:.3f}, {click_y:.3f}) at timestamp {timestamp:.2f}s")
         text_regions = await loop.run_in_executor(
             None,
             lambda: get_text_at_position(frame, click_x, click_y, ocr_scale=1.0)
@@ -760,7 +764,7 @@ async def run_get_text_at_click(websocket, video_path: str, frame_number: int, c
         await send_message(websocket, WSMessageType.ANALYSIS_ERROR, {"error": str(e)})
 
 
-async def run_get_text_in_region(websocket, video_path: str, frame_number: int, region: dict):
+async def run_get_text_in_region(websocket, video_path: str, timestamp: float, region: dict):
     """Get OCR text from a drawn region for box-based anchor selection"""
     try:
         from analysis.pii_wizard import get_text_in_region
@@ -768,14 +772,14 @@ async def run_get_text_in_region(websocket, video_path: str, frame_number: int, 
         
         loop = asyncio.get_running_loop()
         
-        # Read the frame
+        # Read the frame using timestamp-based seeking (supports VFR videos)
         cap = cv2.VideoCapture(video_path)
-        cap.set(cv2.CAP_PROP_POS_FRAMES, frame_number)
+        cap.set(cv2.CAP_PROP_POS_MSEC, timestamp * 1000)  # Convert seconds to milliseconds
         ret, frame = cap.read()
         cap.release()
         
         if not ret:
-            await send_error(websocket, f"Could not read frame {frame_number}")
+            await send_error(websocket, f"Could not read frame at {timestamp:.2f}s")
             return
         
         # Get region params
@@ -859,13 +863,13 @@ async def main():
         logger.info(f"Received signal {sig.name}, shutting down...")
         stop.set()
     
+
     loop = asyncio.get_event_loop()
-    for sig in (signal.SIGINT, signal.SIGTERM):
-        try:
+    if sys.platform != 'win32':
+        for sig in (signal.SIGINT, signal.SIGTERM):
             loop.add_signal_handler(sig, lambda s=sig: handle_shutdown(s))
-        except NotImplementedError:
-            # Windows doesn't support add_signal_handler
-            pass
+    else:
+        logger.info("Windows detected: Running without explicit signal handlers (relying on WebSocket/OS termination)")
     
     async with websockets.serve(
         lambda ws, path: websocket_handler(ws, path, stop),
