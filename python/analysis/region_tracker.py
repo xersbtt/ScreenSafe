@@ -33,8 +33,12 @@ except ImportError:
 try:
     import torch
     HAS_CUDA = torch.cuda.is_available()
+    HAS_MPS = hasattr(torch.backends, 'mps') and torch.backends.mps.is_available()
+    HAS_GPU = HAS_CUDA or HAS_MPS
 except ImportError:
     HAS_CUDA = False
+    HAS_MPS = False
+    HAS_GPU = False
 
 logger = logging.getLogger(__name__)
 
@@ -97,18 +101,19 @@ class ContentTracker:
     # Tuning parameters
     SAMPLE_RATE_HZ = 4  # Check 4 frames per second (every 0.25s)
     SAFETY_BUFFER_SEC = 0.5  # Add 0.5s padding on each end
-    TEXT_SIMILARITY_THRESHOLD = 0.6  # 60% text similarity
-    VISUAL_SIMILARITY_THRESHOLD = 0.85  # 85% visual hash similarity
+    TEXT_SIMILARITY_THRESHOLD = 0.4  # 40% text similarity (lower = more tolerant of typing)
+    VISUAL_SIMILARITY_THRESHOLD = 0.70  # 70% visual hash similarity (lower = more tolerant)
     SCENE_CHANGE_THRESHOLD = 0.4  # 40% histogram difference = scene change
     
     def __init__(self, video_path: str):
         self.video_path = video_path
         self._cancelled = False
         
-        # Initialize OCR reader with GPU if available
+        # Initialize OCR reader with GPU if available (CUDA or MPS)
         if HAS_EASYOCR:
-            use_gpu = HAS_CUDA
-            logger.info(f"Using EasyOCR (GPU: {use_gpu})")
+            use_gpu = HAS_GPU
+            gpu_type = "CUDA" if HAS_CUDA else "MPS" if HAS_MPS else "None"
+            logger.info(f"Using EasyOCR (GPU: {use_gpu}, type: {gpu_type})")
             try:
                 self.reader = easyocr.Reader(['en'], gpu=use_gpu, verbose=False)
                 self.ocr_method = 'easyocr'
@@ -542,7 +547,7 @@ def track_region_forward(
         if ref_hash and hash_val and len(ref_hash) == len(hash_val):
             matches = sum(1 for a, b in zip(ref_hash, hash_val) if a == b)
             similarity = matches / len(ref_hash)
-            content_matches = similarity >= 0.85  # 85% threshold
+            content_matches = similarity >= 0.70  # Visual similarity threshold (matches class constant)
         else:
             content_matches = False
         

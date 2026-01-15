@@ -95,7 +95,7 @@ export const Timeline: React.FC<TimelineProps> = ({
             // Clear the flag after a short delay (enough for click event to fire and be ignored)
             setTimeout(() => {
                 justFinishedDragRef.current = false;
-            }, 100);
+            }, 200);
 
             setDragState(null);
         };
@@ -152,6 +152,10 @@ export const Timeline: React.FC<TimelineProps> = ({
     const playheadPosition = duration > 0 ? (currentTime / duration) * 100 : 0;
 
     const handleTrackClick = (e: React.MouseEvent<HTMLDivElement>) => {
+        // Ignore click if we just finished dragging OR if drag is still active
+        if (justFinishedDragRef.current || dragState) {
+            return;
+        }
         const rect = e.currentTarget.getBoundingClientRect();
         const percent = (e.clientX - rect.left) / rect.width;
         onSeek(percent * duration);
@@ -327,8 +331,8 @@ export const Timeline: React.FC<TimelineProps> = ({
                                                             onClick={(e) => {
                                                                 e.stopPropagation();
 
-                                                                // Ignore click if we just finished dragging
-                                                                if (justFinishedDragRef.current) {
+                                                                // Ignore click if we just finished dragging OR if drag is still active
+                                                                if (justFinishedDragRef.current || dragState) {
                                                                     return;
                                                                 }
 

@@ -11,6 +11,8 @@ export interface AppSettings {
     scanInterval: number;
     motionThreshold: number;
     ocrScale: number;
+    // Detection settings
+    enableRegexPatterns: boolean;  // Auto-detect emails, phones, SSNs etc.
 }
 
 interface SettingsModalProps {
@@ -37,9 +39,10 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
         ocrLanguage: 'eng',
         exportQuality: 'high',
         exportCodec: 'h264',
-        scanInterval: 15,
+        scanInterval: 30,
         motionThreshold: 30,
-        ocrScale: 1.0,
+        ocrScale: 0.75,
+        enableRegexPatterns: false,  // OFF by default - anchors are preferred
     };
 
     // Merge settings with defaults for display
@@ -149,7 +152,73 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
                     {/* Section divider */}
                     <div className="settings-divider">
+                        <span>Detection Settings</span>
+                    </div>
+
+                    {/* Regex Pattern Detection */}
+                    <div className="settings-group">
+                        <label className="settings-label">Auto-detect PII Patterns</label>
+                        <button
+                            className={`settings-toggle-single ${safeSettings.enableRegexPatterns ? 'active' : ''}`}
+                            onClick={() => handleChange('enableRegexPatterns', !safeSettings.enableRegexPatterns)}
+                        >
+                            {safeSettings.enableRegexPatterns ? '✓ Enabled' : 'Disabled'}
+                        </button>
+                        <small className="settings-hint">
+                            Automatically detect emails, phones, SSNs, credit cards.
+                            Disable if using anchors to avoid duplicates.
+                        </small>
+                    </div>
+
+                    {/* Section divider */}
+                    <div className="settings-divider">
                         <span>Advanced Scan Settings</span>
+                    </div>
+
+                    {/* Scan Presets */}
+                    <div className="settings-group">
+                        <label className="settings-label">Quick Presets</label>
+                        <div className="settings-toggle-group">
+                            <button
+                                className="settings-toggle"
+                                onClick={() => {
+                                    onSettingsChange({
+                                        scanInterval: 60,
+                                        ocrScale: 0.5,
+                                        motionThreshold: 40
+                                    });
+                                }}
+                                title="Faster processing, good for quick previews"
+                            >
+                                ⚡ Fast
+                            </button>
+                            <button
+                                className="settings-toggle"
+                                onClick={() => {
+                                    onSettingsChange({
+                                        scanInterval: 30,
+                                        ocrScale: 0.75,
+                                        motionThreshold: 30
+                                    });
+                                }}
+                                title="Balanced speed and accuracy"
+                            >
+                                ⚖️ Balanced
+                            </button>
+                            <button
+                                className="settings-toggle"
+                                onClick={() => {
+                                    onSettingsChange({
+                                        scanInterval: 15,
+                                        ocrScale: 1.0,
+                                        motionThreshold: 20
+                                    });
+                                }}
+                                title="Maximum accuracy, slower processing"
+                            >
+                                🔍 Thorough
+                            </button>
+                        </div>
                     </div>
 
                     {/* Scan Interval */}

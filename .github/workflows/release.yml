@@ -89,18 +89,110 @@ jobs:
             release/*.zip
             release/*.exe
 
+  build-macos:
+    runs-on: macos-latest
+    
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: './src-tauri -> target'
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Build Tauri app for Apple Silicon
+        run: npm run tauri build -- --target aarch64-apple-darwin
+        env:
+          # Skip code signing for unsigned build
+          TAURI_SIGNING_PRIVATE_KEY: ""
+
+      - name: Build Tauri app for Intel Mac
+        run: npm run tauri build -- --target x86_64-apple-darwin
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ""
+
+      - name: Prepare release files
+        run: |
+          mkdir -p release
+          
+          # Find and copy ARM64 DMG
+          ARM_DMG=$(find src-tauri/target/aarch64-apple-darwin/release/bundle/dmg -name "*.dmg" 2>/dev/null | head -1)
+          if [ -n "$ARM_DMG" ]; then
+            echo "Found ARM64 DMG: $ARM_DMG"
+            cp "$ARM_DMG" "release/ScreenSafe-${{ github.ref_name }}-macos-arm64.dmg"
+          fi
+          
+          # Find and copy x86_64 DMG
+          X86_DMG=$(find src-tauri/target/x86_64-apple-darwin/release/bundle/dmg -name "*.dmg" 2>/dev/null | head -1)
+          if [ -n "$X86_DMG" ]; then
+            echo "Found x86_64 DMG: $X86_DMG"
+            cp "$X86_DMG" "release/ScreenSafe-${{ github.ref_name }}-macos-x64.dmg"
+          fi
+          
+          # Create portable ZIP with .app bundle and Python sidecar for ARM64
+          if [ -d "src-tauri/target/aarch64-apple-darwin/release/bundle/macos" ]; then
+            mkdir -p release/macos-arm64
+            cp -R src-tauri/target/aarch64-apple-darwin/release/bundle/macos/*.app release/macos-arm64/
+            cp -R python release/macos-arm64/
+            [ -d "assets" ] && cp -R assets release/macos-arm64/
+            cd release && zip -r "ScreenSafe-${{ github.ref_name }}-macos-arm64-portable.zip" macos-arm64 && cd ..
+            rm -rf release/macos-arm64
+          fi
+          
+          # Create portable ZIP for x86_64
+          if [ -d "src-tauri/target/x86_64-apple-darwin/release/bundle/macos" ]; then
+            mkdir -p release/macos-x64
+            cp -R src-tauri/target/x86_64-apple-darwin/release/bundle/macos/*.app release/macos-x64/
+            cp -R python release/macos-x64/
+            [ -d "assets" ] && cp -R assets release/macos-x64/
+            cd release && zip -r "ScreenSafe-${{ github.ref_name }}-macos-x64-portable.zip" macos-x64 && cd ..
+            rm -rf release/macos-x64
+          fi
+          
+          echo "Release files prepared:"
+          ls -la release/
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-release
+          path: |
+            release/*.dmg
+            release/*.zip
+
   create-release:
-    needs: build-windows
+    needs: [build-windows, build-macos]
     runs-on: ubuntu-latest
     
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Download artifacts
+      - name: Download Windows artifacts
         uses: actions/download-artifact@v4
         with:
           name: windows-release
+          path: release
+
+      - name: Download macOS artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: macos-release
           path: release
 
       - name: List downloaded files
@@ -115,18 +207,26 @@ jobs:
             
             Privacy-first video redaction tool - automatically detect and blur sensitive information in screen recordings.
             
-            ### Downloads
+            ### Windows Downloads
             - **Portable ZIP**: Contains executable + Python sidecar. Extract and run `ScreenSafe.exe`
-            - **Installer** (if available): Standard Windows installer
+            - **Installer**: Standard Windows installer (.exe)
+            
+            ### macOS Downloads
+            - **DMG (ARM64)**: For Apple Silicon Macs (M1/M2/M3/M4)
+            - **DMG (x64)**: For Intel Macs
+            - **Portable ZIP**: Contains .app bundle + Python sidecar
+            
+            > ⚠️ **macOS Note**: This is an unsigned build. On first launch, right-click the app and select "Open" to bypass Gatekeeper.
             
             ### Requirements
-            - Windows 10/11 (x64)
-            - Python 3.10+ (with EasyOCR for OCR features)
+            - **Windows**: Windows 10/11 (x64), Python 3.10+
+            - **macOS**: macOS 11+ (Big Sur or later), Python 3.10+
             
             See [CHANGELOG.md](https://github.com/xersbtt/ScreenSafe/blob/main/CHANGELOG.md) for details.
           files: |
             release/*.zip
             release/*.exe
+            release/*.dmg
           draft: false
           prerelease: false
           fail_on_unmatched_files: false

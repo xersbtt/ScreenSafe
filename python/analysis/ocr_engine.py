@@ -6,7 +6,7 @@ Optimized for screen recordings with high text density.
 """
 
 import numpy as np
-from typing import Optional
+from typing import Optional, List
 import logging
 
 from .models import TextDetection, BoundingBox
@@ -24,7 +24,7 @@ class OCREngine:
     - Works on Windows without build tools
     """
     
-    def __init__(self, use_gpu: bool = False, lang: list[str] = None):
+    def __init__(self, use_gpu: bool = False, lang: List[str] = None):
         """
         Initialize OCR engine.
         
@@ -67,7 +67,8 @@ class OCREngine:
                     frame: np.ndarray, 
                     frame_number: int,
                     min_confidence: float = 0.5,
-                    prev_frame: np.ndarray = None) -> list[TextDetection]:
+                    prev_frame: np.ndarray = None,
+                    scale: float = 1.0) -> List[TextDetection]:
         """
         Detect and recognize text in a video frame.
         Skips OCR if frame is very similar to previous (for speed).
@@ -77,6 +78,7 @@ class OCREngine:
             frame_number: Frame index for tracking
             min_confidence: Minimum confidence threshold
             prev_frame: Previous frame for change detection
+            scale: Scale factor for image (1.0 = native, 2.0 = 2x size)
             
         Returns:
             List of TextDetection objects
@@ -96,6 +98,14 @@ class OCREngine:
         try:
             # Run OCR - EasyOCR expects RGB
             rgb_frame = frame[:, :, ::-1]  # BGR to RGB
+            
+            # Apply scaling if requested
+            if scale != 1.0 and scale > 0:
+                h, w = rgb_frame.shape[:2]
+                new_w = int(w * scale)
+                new_h = int(h * scale)
+                rgb_frame = cv2.resize(rgb_frame, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
+            
             results = self._reader.readtext(rgb_frame)
             
             if results is None or len(results) == 0:
@@ -141,9 +151,9 @@ class OCREngine:
         return detections
     
     def batch_detect(self, 
-                     frames: list[np.ndarray],
+                     frames: List[np.ndarray],
                      start_frame: int = 0,
-                     min_confidence: float = 0.5) -> list[list[TextDetection]]:
+                     min_confidence: float = 0.5) -> List[List[TextDetection]]:
         """
         Detect text in multiple frames.
         
@@ -172,7 +182,7 @@ class OCREngine:
 _ocr_engine: Optional[OCREngine] = None
 
 
-def get_ocr_engine(use_gpu: bool = False, lang: list[str] = None) -> OCREngine:
+def get_ocr_engine(use_gpu: bool = False, lang: List[str] = None) -> OCREngine:
     """Get or create the singleton OCR engine instance"""
     global _ocr_engine
     

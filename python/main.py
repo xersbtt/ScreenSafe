@@ -109,6 +109,8 @@ async def handle_message(websocket, message: str):
             pii_config = load_pii_config()
             
             # Create settings
+            settings_dict['ocr_scale'] = payload.get("ocr_scale", 1.0)
+            settings_dict['smart_sampling'] = payload.get("smart_sampling", True)
             settings = AnalysisSettings(**settings_dict) if settings_dict else AnalysisSettings()
             
             # Initialize analyzer with PII config
@@ -209,19 +211,21 @@ async def handle_message(websocket, message: str):
             motion_threshold = payload.get("motion_threshold", 30.0)
             ocr_scale = payload.get("ocr_scale", 1.0)
             scan_zones = payload.get("scan_zones", [])
+            enable_regex_patterns = payload.get("enable_regex_patterns", False)
             
             if not video_path:
                 await send_error(websocket, "No video path provided for scan")
                 return
             
             logger.info(f"Starting video scan: {video_path}")
-            logger.info(f"Config: {len(anchors_data)} anchors, {len(watch_list)} watch items, scan_interval={scan_interval}")
+            logger.info(f"Config: {len(anchors_data)} anchors, {len(watch_list)} watch items, scan_interval={scan_interval}, regex={enable_regex_patterns}")
             
             # Start scan in background
             current_task = asyncio.create_task(
                 run_scan(
                     websocket, video_path, anchors_data, watch_list,
-                    scan_interval, motion_threshold, ocr_scale, scan_zones
+                    scan_interval, motion_threshold, ocr_scale, scan_zones,
+                    enable_regex_patterns
                 )
             )
         
@@ -392,7 +396,9 @@ async def run_export(websocket, video_path: str, output_path: str, detections_da
                     end_time=d.get("endTime", 0),
                     start_frame=d.get("frameStart", 0),
                     end_frame=d.get("frameEnd", 0),
-                    track_id=d.get("trackId")
+                    track_id=d.get("trackId"),
+                    # Motion tracking: map camelCase framePositions to snake_case frame_positions
+                    frame_positions=d.get("framePositions")
                 )
                 detections.append(detection)
         
@@ -504,7 +510,8 @@ async def run_export(websocket, video_path: str, output_path: str, detections_da
 
 
 async def run_scan(websocket, video_path: str, anchors: list, watch_list: list,
-                   scan_interval: int, motion_threshold: float, ocr_scale: float, scan_zones: list):
+                   scan_interval: int, motion_threshold: float, ocr_scale: float, scan_zones: list,
+                   enable_regex_patterns: bool = False):
     """Run OCR scan on video WITHOUT encoding - returns blur regions for overlay display."""
     try:
         from analysis import scan_video
@@ -535,7 +542,8 @@ async def run_scan(websocket, video_path: str, anchors: list, watch_list: list,
                 scan_zones=scan_zones,
                 progress_callback=on_progress,
                 use_cache=True,
-                use_gpu=True
+                use_gpu=True,
+                enable_regex_patterns=enable_regex_patterns
             )
         )
         
@@ -827,6 +835,42 @@ async def websocket_handler(websocket, path, stop_event):
     """Handle WebSocket connection"""
     logger.info(f"Client connected: {websocket.remote_address}")
     
+    # Send system info (GPU status) on connection
+    # Supports CUDA (NVIDIA) and MPS (Apple Silicon)
+    try:
+        import torch
+        gpu_available = False
+        gpu_name = None
+        gpu_type = None
+        
+        # Check CUDA first (NVIDIA GPUs)
+        if torch.cuda.is_available():
+            gpu_available = True
+            gpu_name = torch.cuda.get_device_name(0)
+            gpu_type = "CUDA"
+        # Check MPS (Apple Silicon)
+        elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
+            gpu_available = True
+            gpu_name = "Apple Silicon (MPS)"
+            gpu_type = "MPS"
+        
+    except ImportError:
+        gpu_available = False
+        gpu_name = None
+        gpu_type = None
+    except Exception as e:
+        logger.warning(f"GPU detection error: {e}")
+        gpu_available = False
+        gpu_name = None
+        gpu_type = None
+    
+    logger.info(f"GPU Status: available={gpu_available}, name={gpu_name}, type={gpu_type}")
+    await send_message(websocket, WSMessageType.SYSTEM_INFO, {
+        "gpu_available": gpu_available,
+        "gpu_name": gpu_name,
+        "gpu_type": gpu_type,
+    })
+    
     try:
         async for message in websocket:
             await handle_message(websocket, message)
@@ -886,6 +930,14 @@ if __name__ == "__main__":
         asyncio.run(main())
     except KeyboardInterrupt:
         logger.info("Interrupted by user")
+    except OSError as e:
+        # Handle port already in use (common in dev mode hot-reload)
+        if e.errno in (10048, 98):  # 10048 = Windows, 98 = Linux/macOS
+            logger.info("Port already in use - another sidecar instance is running (this is normal in dev mode)")
+            sys.exit(0)  # Exit gracefully, not an error
+        else:
+            logger.error(f"Fatal error: {e}")
+            sys.exit(1)
     except Exception as e:
         logger.error(f"Fatal error: {e}")
         sys.exit(1)

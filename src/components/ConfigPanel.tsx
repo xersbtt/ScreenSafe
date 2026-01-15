@@ -28,6 +28,7 @@ interface ConfigPanelProps {
     anchors: Anchor[];
     scanZones: ScanZone[];
     videoDuration: number;
+    currentTime: number;
     onWatchListChange: (items: WatchItem[]) => void;
     onAnchorsChange: (anchors: Anchor[]) => void;
     onScanZonesChange: (zones: ScanZone[]) => void;
@@ -43,6 +44,7 @@ export const ConfigPanel: React.FC<ConfigPanelProps> = ({
     anchors,
     scanZones,
     videoDuration,
+    currentTime,
     onWatchListChange,
     onAnchorsChange,
     onScanZonesChange,
@@ -363,6 +365,18 @@ export const ConfigPanel: React.FC<ConfigPanelProps> = ({
                             return `${mins}:${secs.toString().padStart(2, '0')}`;
                         };
 
+                        // Parse MM:SS or M:SS or just seconds
+                        const parseTime = (input: string): number => {
+                            const trimmed = input.trim();
+                            if (trimmed.includes(':')) {
+                                const parts = trimmed.split(':');
+                                const mins = parseInt(parts[0]) || 0;
+                                const secs = parseInt(parts[1]) || 0;
+                                return mins * 60 + secs;
+                            }
+                            return parseFloat(trimmed) || 0;
+                        };
+
                         return (
                             <div key={zone.id} className={`scan-zone-item ${!zone.enabled ? 'disabled' : ''}`}>
                                 <input
@@ -373,29 +387,81 @@ export const ConfigPanel: React.FC<ConfigPanelProps> = ({
                                     ))}
                                 />
                                 <div className="scan-zone-times">
-                                    <input
-                                        type="number"
-                                        min="0"
-                                        max={videoDuration}
-                                        step="1"
-                                        value={zone.start}
-                                        onChange={e => onScanZonesChange(scanZones.map(z =>
-                                            z.id === zone.id ? { ...z, start: parseFloat(e.target.value) || 0 } : z
-                                        ))}
-                                        title={`Start: ${formatTime(zone.start)}`}
-                                    />
-                                    <span>→</span>
-                                    <input
-                                        type="number"
-                                        min="0"
-                                        max={videoDuration}
-                                        step="1"
-                                        value={zone.end}
-                                        onChange={e => onScanZonesChange(scanZones.map(z =>
-                                            z.id === zone.id ? { ...z, end: parseFloat(e.target.value) || 0 } : z
-                                        ))}
-                                        title={`End: ${formatTime(zone.end)}`}
-                                    />
+                                    <div className="scan-zone-time-group">
+                                        <button
+                                            className="btn btn-xs"
+                                            onClick={() => onScanZonesChange(scanZones.map(z => {
+                                                if (z.id !== zone.id) return z;
+                                                // If new start would be after end, adjust end to match
+                                                const newStart = currentTime;
+                                                const newEnd = newStart > z.end ? newStart : z.end;
+                                                return { ...z, start: newStart, end: newEnd };
+                                            }))}
+                                            title="Set start to current playhead position"
+                                        >
+                                            ▶ Start
+                                        </button>
+                                        <input
+                                            type="text"
+                                            placeholder="0:00"
+                                            key={`start-${zone.id}-${zone.start}`}
+                                            defaultValue={formatTime(zone.start)}
+                                            onBlur={e => {
+                                                const newStart = Math.max(0, Math.min(videoDuration, parseTime(e.target.value)));
+                                                e.target.value = formatTime(newStart);
+                                                onScanZonesChange(scanZones.map(z => {
+                                                    if (z.id !== zone.id) return z;
+                                                    // If new start would be after end, adjust end to match
+                                                    const newEnd = newStart > z.end ? newStart : z.end;
+                                                    return { ...z, start: newStart, end: newEnd };
+                                                }));
+                                            }}
+                                            onKeyDown={e => {
+                                                if (e.key === 'Enter') {
+                                                    e.currentTarget.blur();
+                                                }
+                                            }}
+                                            title="Start time (MM:SS)"
+                                        />
+                                    </div>
+                                    <span className="scan-zone-arrow">→</span>
+                                    <div className="scan-zone-time-group">
+                                        <button
+                                            className="btn btn-xs"
+                                            onClick={() => onScanZonesChange(scanZones.map(z => {
+                                                if (z.id !== zone.id) return z;
+                                                // If new end would be before start, adjust start to match
+                                                const newEnd = currentTime;
+                                                const newStart = newEnd < z.start ? newEnd : z.start;
+                                                return { ...z, start: newStart, end: newEnd };
+                                            }))}
+                                            title="Set end to current playhead position"
+                                        >
+                                            End ▶
+                                        </button>
+                                        <input
+                                            type="text"
+                                            placeholder="0:00"
+                                            key={`end-${zone.id}-${zone.end}`}
+                                            defaultValue={formatTime(zone.end)}
+                                            onBlur={e => {
+                                                const newEnd = Math.max(0, Math.min(videoDuration, parseTime(e.target.value)));
+                                                e.target.value = formatTime(newEnd);
+                                                onScanZonesChange(scanZones.map(z => {
+                                                    if (z.id !== zone.id) return z;
+                                                    // If new end would be before start, adjust start to match
+                                                    const newStart = newEnd < z.start ? newEnd : z.start;
+                                                    return { ...z, start: newStart, end: newEnd };
+                                                }));
+                                            }}
+                                            onKeyDown={e => {
+                                                if (e.key === 'Enter') {
+                                                    e.currentTarget.blur();
+                                                }
+                                            }}
+                                            title="End time (MM:SS)"
+                                        />
+                                    </div>
                                     <span className="scan-zone-duration">
                                         ({formatTime(zone.end - zone.start)})
                                     </span>

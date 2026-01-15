@@ -2,27 +2,23 @@
 # Install with: pip install -r requirements.txt
 
 # Core
-onnxruntime>=1.17.0        # CPU inference engine
-onnxruntime-gpu>=1.17.0    # GPU inference (optional, install separately if CUDA available)
-numpy>=1.24.0
-opencv-python>=4.8.0       # Image processing
-Pillow>=10.0.0             # Image I/O
+numpy==1.26.4
+opencv-python-headless==4.9.0.80
+Pillow==10.2.0
 
-# OCR
-paddlepaddle>=2.5.0        # PaddlePaddle framework
-paddleocr>=2.7.0           # PaddleOCR for text detection/recognition
+# OCR - EasyOCR (pre-built wheels, no compilation needed)
+easyocr==1.7.1
+torch>=2.0.0
+torchvision>=0.15.0
 
-# PII Detection
-presidio-analyzer>=2.2.0   # Microsoft Presidio for PII classification
-spacy>=3.7.0               # NLP for named entity recognition
-
-# Object Detection
-ultralytics>=8.0.0         # YOLOv8 for object detection
+# PII Detection - regex only (skip Presidio/spacy for now to avoid issues)
+# We have regex patterns built into pii_classifier.py
 
 # Object Tracking
-norfair>=2.2.0             # Lightweight object tracking
+norfair==2.2.0
 
-# IPC & Utilities  
-websockets>=12.0           # Communication with Tauri frontend
-pydantic>=2.0              # Data validation
-tqdm>=4.65.0               # Progress bars
+# IPC & Utilities
+websockets==12.0
+pydantic==2.6.1
+tqdm==4.66.2
+platformdirs>=4.0.0  # Cross-platform user cache directory

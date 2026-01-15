@@ -33,7 +33,8 @@ export type WSMessageType =
     | 'preview_frame'
     | 'get_text_at_click'
     | 'get_text_in_region'
-    | 'start_scan';
+    | 'start_scan'
+    | 'system_info';
 
 interface WSMessage {
     type: WSMessageType;
@@ -51,12 +52,31 @@ type TrackResultCallback = (result: {
     endTime: number;
     framePositions?: Array<[number, number, number, number, number]>; // [frame, x, y, w, h]
 }) => void;
+type SystemInfoCallback = (info: { gpuAvailable: boolean; gpuName: string | null; gpuType: string | null }) => void;
 
 let onProgress: ProgressCallback | null = null;
 let onDetection: DetectionCallback | null = null;
 let onComplete: CompleteCallback | null = null;
 let onError: ErrorCallback | null = null;
 let onTrackResult: TrackResultCallback | null = null;
+let onSystemInfo: SystemInfoCallback | null = null;
+
+// GPU Status (updated on connection)
+let gpuStatus: { available: boolean; name: string | null; type: string | null } = { available: false, name: null, type: null };
+
+/**
+ * Get current GPU status
+ */
+export function getGpuStatus(): { available: boolean; name: string | null; type: string | null } {
+    return gpuStatus;
+}
+
+/**
+ * Set callback for system info updates
+ */
+export function onSystemInfoUpdate(callback: SystemInfoCallback): void {
+    onSystemInfo = callback;
+}
 
 /**
  * Connect to Python sidecar WebSocket
@@ -170,6 +190,7 @@ function handleWSMessage(message: WSMessage): void {
                     bbox: { x: number; y: number; width: number; height: number };
                     type: string;
                     source: string;
+                    frame_positions?: Array<[number, number, number, number, number]>;
                 }>;
                 console.log('[Tauri] Scan complete, detected', detectedBlurs?.length || 0, 'blur regions');
                 onScanComplete(detectedBlurs || []);
@@ -240,6 +261,23 @@ function handleWSMessage(message: WSMessage): void {
                 };
                 console.log('[Tauri] Track result:', result.detectionId, framePositions?.length || 0, 'positions');
                 onTrackResult(result);
+            }
+            break;
+
+        case 'system_info':
+            // Update GPU status from Python backend
+            gpuStatus = {
+                available: message.payload.gpu_available as boolean || false,
+                name: message.payload.gpu_name as string || null,
+                type: message.payload.gpu_type as string || null
+            };
+            console.log('[Tauri] System info:', gpuStatus);
+            if (onSystemInfo) {
+                onSystemInfo({
+                    gpuAvailable: gpuStatus.available,
+                    gpuName: gpuStatus.name,
+                    gpuType: gpuStatus.type
+                });
             }
             break;
 
@@ -338,6 +376,7 @@ export async function startExport(
         frameEnd: number;
         isRedacted: boolean;
         trackId?: string;
+        framePositions?: Array<[number, number, number, number, number]>;  // [frame, x, y, width, height]
     }>,
     anchors: Array<{
         id: string;
@@ -437,6 +476,7 @@ let onScanComplete: ((detectedBlurs: Array<{
     bbox: { x: number; y: number; width: number; height: number };
     type: string;
     source: string;
+    frame_positions?: Array<[number, number, number, number, number]>;
 }>) => void) | null = null;
 
 /**
@@ -462,6 +502,7 @@ export async function startScan(
         motionThreshold?: number;
         ocrScale?: number;
         scanZones?: Array<{ start: number; end: number }>;
+        enableRegexPatterns?: boolean;
     },
     callbacks?: {
         onProgress?: (progress: number, stage: string) => void;
@@ -472,6 +513,7 @@ export async function startScan(
             bbox: { x: number; y: number; width: number; height: number };
             type: string;
             source: string;
+            frame_positions?: Array<[number, number, number, number, number]>;
         }>) => void;
         onError?: (error: string) => void;
     }
@@ -499,6 +541,7 @@ export async function startScan(
         motion_threshold: config?.motionThreshold ?? 30.0,
         ocr_scale: config?.ocrScale ?? 1.0,
         scan_zones: zones,
+        enable_regex_patterns: config?.enableRegexPatterns ?? false,
     });
 }
 

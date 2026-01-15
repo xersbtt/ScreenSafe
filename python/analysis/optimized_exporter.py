@@ -30,8 +30,23 @@ logger = logging.getLogger(__name__)
 BLUR_KERNEL = (51, 51)
 BLUR_SIGMA = 30
 
-# Cache directory for OCR results
-CACHE_DIR = Path(__file__).parent.parent / ".ocr_cache"
+# Cache directory for OCR results - use user's cache directory for proper isolation
+def _get_cache_dir() -> Path:
+    """Get the appropriate user cache directory for OCR results."""
+    try:
+        # Try platformdirs for cross-platform user cache dir
+        from platformdirs import user_cache_dir
+        cache_base = Path(user_cache_dir("ScreenSafe", "ScreenSafe"))
+    except ImportError:
+        # Fallback: use system temp directory with app subfolder
+        import tempfile
+        cache_base = Path(tempfile.gettempdir()) / "ScreenSafe"
+    
+    cache_dir = cache_base / "ocr_cache"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    return cache_dir
+
+CACHE_DIR = _get_cache_dir()
 
 # Regex patterns for automatic PII detection
 REGEX_PATTERNS = {
@@ -169,15 +184,27 @@ class ParallelOCRProcessor:
                 raise
         return self._reader
     
-    def process_frame(self, frame: np.ndarray, frame_number: int) -> Tuple[int, List[Dict]]:
+    def process_frame(self, frame: np.ndarray, frame_number: int, scale: float = 1.0) -> Tuple[int, List[Dict]]:
         """Process a single frame and return OCR results."""
         reader = self._get_reader()
         
         try:
-            results = reader.readtext(frame)
+            # EasyOCR expects RGB
+            rgb_frame = frame[:, :, ::-1]  # BGR to RGB
+            
+            # Apply scaling
+            if scale != 1.0 and scale > 0:
+                h, w = rgb_frame.shape[:2]
+                new_w = int(w * scale)
+                new_h = int(h * scale)
+                rgb_frame = cv2.resize(rgb_frame, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
+            
+            results = reader.readtext(rgb_frame)
             text_regions = []
             
-            height, width = frame.shape[:2]
+            # Use dimensions of the PROCESSED frame for normalization
+            proc_h, proc_w = rgb_frame.shape[:2]
+            
             for (bbox_corners, text, conf) in results:
                 if conf > 0.3:
                     x_coords = [p[0] for p in bbox_corners]
@@ -189,10 +216,10 @@ class ParallelOCRProcessor:
                         'text': text.lower().strip(),
                         'original_text': text,
                         'bbox': {
-                            'x': x1 / width,
-                            'y': y1 / height,
-                            'width': (x2 - x1) / width,
-                            'height': (y2 - y1) / height,
+                            'x': x1 / proc_w,
+                            'y': y1 / proc_h,
+                            'width': (x2 - x1) / proc_w,
+                            'height': (y2 - y1) / proc_h,
                         },
                         'confidence': conf
                     })
@@ -291,6 +318,7 @@ class OptimizedVideoExporter:
         self._prev_frame = None
         self._codec = codec
         self._quality = quality
+        self._enable_regex_patterns = False  # Export uses pre-defined detections
         
         # Initialize OCR cache
         self._cache = OCRCache(self.video_path) if use_cache else None
@@ -574,10 +602,12 @@ class OptimizedVideoExporter:
         blur_kernel = (blur_strength, blur_strength)
         
         for det in detections:
-            # For VFR/timestamp sync, we should prefer the bbox from the specific frame if available (tracking),
-            # but currently detections assume static bbox unless track_id/frame_positions is implemented.
-            # For now, we use the detection's main bbox which is usually correct for the segment.
-            bbox = det.bbox
+            # Use interpolated bbox if frame_positions is available (motion tracking)
+            interpolated_bbox = self._get_bbox_at_frame(det, frame_number)
+            if interpolated_bbox is not None:
+                bbox = interpolated_bbox
+            else:
+                bbox = det.bbox
             
             x1 = max(0, int(bbox.x * width))
             y1 = max(0, int(bbox.y * height))
@@ -757,8 +787,8 @@ class OptimizedVideoExporter:
                     matched_keyword = watch_item  # Store the original watch item
                     break
             
-            # Check regex patterns
-            if not matched_keyword:
+            # Check regex patterns (only if enabled)
+            if not matched_keyword and self._enable_regex_patterns:
                 for pattern_name, pattern in REGEX_PATTERNS.items():
                     if pattern.search(text):
                         matched_keyword = f"regex:{pattern_name}"  # e.g., "regex:email"
@@ -792,8 +822,10 @@ class OptimizedVideoExporter:
             return []
         
         # Maximum gap between frames to consider them "consecutive"
-        # If scan_interval is 30, max gap should be ~60 (2x to allow for occasional misses)
-        max_frame_gap = self._scan_interval * 2
+        # Smart Sampling can skip up to 10 intervals (scan_interval * 10)
+        # So we need a gap large enough to bridge those static periods.
+        # Set to 12x scan_interval to be safe.
+        max_frame_gap = self._scan_interval * 12
         
         # Group by type (anchor/watchlist)
         from collections import defaultdict
@@ -807,62 +839,82 @@ class OptimizedVideoExporter:
             # Sort by frame number
             items.sort(key=lambda x: x['frame'])
             
-            # Group by SOURCE (anchor label/keyword) + similar bbox position + frame continuity
-            # IMPORTANT: Different sources should NEVER be merged, even if at similar positions
-            position_groups = []
+            # Active tracks: list of {'items': [], 'last_frame': int, 'last_bbox': dict}
+            tracks = []
+            
             for item in items:
                 bbox = item['bbox']
                 frame = item['frame']
-                source = item['source']  # e.g., "Email", "NAME ON CARD", etc.
-                found_group = False
+                source = item['source']
                 
-                for group in position_groups:
-                    ref_item = group[0]
-                    ref_bbox = ref_item['bbox']
-                    ref_source = ref_item['source']
-                    last_frame = group[-1]['frame']
+                # Find best matching track
+                best_track_idx = -1
+                best_dist = 1.0  # Max distance to consider (normalized)
+                
+                for i, track in enumerate(tracks):
+                    last_item = track['items'][-1]
                     
-                    # MUST have same source - different anchors should never merge
-                    if source != ref_source:
+                    # 1. Source check (Must match exactly)
+                    if source != last_item['source']:
                         continue
+                        
+                    # 2. Consecutive check (Must be within max gap AND different frame)
+                    frame_diff = frame - track['last_frame']
+                    if frame_diff <= 0 or frame_diff > max_frame_gap:
+                        continue
+                        
+                    # 3. Distance check (Euclidean distance of centers)
+                    # Use TIGHT threshold (0.05 = 5% screen) to avoid merging different anchor instances
+                    cx1 = bbox['x'] + bbox['width']/2
+                    cy1 = bbox['y'] + bbox['height']/2
+                    cx2 = track['last_bbox']['x'] + track['last_bbox']['width']/2
+                    cy2 = track['last_bbox']['y'] + track['last_bbox']['height']/2
                     
-                    # Check if position is essentially the same (within 0.5% - very strict)
-                    # Only truly identical positions should merge
-                    position_match = (
-                        abs(bbox['x'] - ref_bbox['x']) < 0.005 and
-                        abs(bbox['y'] - ref_bbox['y']) < 0.005 and
-                        abs(bbox['width'] - ref_bbox['width']) < 0.005 and
-                        abs(bbox['height'] - ref_bbox['height']) < 0.005
-                    )
+                    dist = ((cx1 - cx2)**2 + (cy1 - cy2)**2)**0.5
                     
-                    # Check if frame is consecutive (within max gap)
-                    frame_is_consecutive = (frame - last_frame) <= max_frame_gap
-                    
-                    if position_match and frame_is_consecutive:
-                        group.append(item)
-                        found_group = True
-                        break
+                    if dist < 0.05 and dist < best_dist:
+                        best_dist = dist
+                        best_track_idx = i
                 
-                if not found_group:
-                    position_groups.append([item])
+                if best_track_idx >= 0:
+                    # Append to existing track
+                    tracks[best_track_idx]['items'].append(item)
+                    tracks[best_track_idx]['last_frame'] = frame
+                    tracks[best_track_idx]['last_bbox'] = bbox
+                else:
+                    # Start new track
+                    tracks.append({
+                        'items': [item],
+                        'last_frame': frame,
+                        'last_bbox': bbox
+                    })
             
-            # For each position group, create a single consolidated detection
-            for group in position_groups:
-                first = group[0]
-                last = group[-1]
-                # Debug: log what sources are in this group
-                sources_in_group = set(item['source'] for item in group)
-                logger.debug(f"Group: {len(group)} items, sources={sources_in_group}, "
-                            f"frames {first['frame']}-{last['frame']}, type={det_type}")
+            # Convert tracks to consolidated detections
+            for track in tracks:
+                track_items = track['items']
+                first = track_items[0]
+                last = track_items[-1]
+                
+                # Create frame_positions list [frame, x, y, w, h]
+                frame_positions = []
+                for item in track_items:
+                    b = item['bbox']
+                    frame_positions.append([
+                        item['frame'], b['x'], b['y'], b['width'], b['height']
+                    ])
+                
                 consolidated.append({
                     'frame': first['frame'],
                     'time': first['time'],
-                    'end_time': last['time'] + 1/30,  # End time of last frame
-                    'bbox': first['bbox'],  # Use first bbox position
+                    'end_time': last['time'] + 1/30,
+                    'bbox': first['bbox'],  # Start position
                     'type': det_type,
                     'source': first['source'],
-                    'occurrence_count': len(group)  # How many frames this appeared in
+                    'occurrence_count': len(track_items),
+                    'frame_positions': frame_positions  # Enable frontend tracking
                 })
+                
+        return consolidated
         
         return consolidated
     
@@ -987,7 +1039,8 @@ def scan_video(video_path: str,
                video_info: VideoInfo = None,
                progress_callback: Callable[[float, str], None] = None,
                use_cache: bool = True,
-               use_gpu: bool = True) -> Dict:
+               use_gpu: bool = True,
+               enable_regex_patterns: bool = False) -> Dict:
     """
     Scan video for blur regions using OCR WITHOUT encoding any video.
     
@@ -1037,6 +1090,7 @@ def scan_video(video_path: str,
     scanner._ocr_scale = ocr_scale
     scanner._scan_zones = scan_zones or []
     scanner._prev_frame = None
+    scanner._enable_regex_patterns = enable_regex_patterns
     
     # Debug: log anchor configurations and video dimensions
     logger.info(f"Video dimensions: {video_info.width}x{video_info.height}")
@@ -1083,17 +1137,51 @@ def scan_video(video_path: str,
             # Check if we're in a scan zone
             is_in_zone = scanner._is_in_scan_zone(current_time)
             
-            # Motion detection for scrolling
-            is_scrolling = scanner._detect_motion(frame)
+            # Motion detection is now integrated into Adaptive Scanning
             
-            # Run OCR at intervals (only when in zone and not scrolling)
-            should_ocr = (
-                is_in_zone and 
-                not is_scrolling and 
-                frame_number % scan_interval == 0
-            )
+            # --- Adaptive Scanning Logic ---
+            should_scan = False
             
-            if should_ocr:
+            # Default check: is it time to scan?
+            is_interval_frame = (frame_number % scan_interval == 0)
+            
+            if is_in_zone:
+                if is_interval_frame:
+                    should_scan = True
+                
+                # Apply Smart Sampling to skip truly static interval frames
+                # But ALWAYS scan at least every 3rd interval for reliability
+                is_forced_interval = (frame_number % (scan_interval * 3) == 0)
+                
+                if scanner._prev_frame is not None:
+                    # Downscale for fast comparison
+                    curr_small = cv2.resize(frame, (64, 64))
+                    prev_small = cv2.resize(scanner._prev_frame, (64, 64))
+                    
+                    # Calculate visual difference
+                    diff = cv2.absdiff(curr_small, prev_small)
+                    mean_diff = np.mean(diff) / 255.0
+                    
+                    if mean_diff < 0.005 and not is_forced_interval:
+                        # Truly static (< 0.5% change) - skip unless forced interval
+                        # This threshold catches most typing but skips static pauses
+                        if is_interval_frame:
+                            should_scan = False
+                            # logger.debug(f"Smart skip: frame {frame_number} static (diff={mean_diff:.4f})")
+                    
+                    elif mean_diff > 0.05:
+                        # Motion Boost - add extra scans during movement
+                        if frame_number % 2 == 0:
+                            logger.info(f"Motion Boost triggered at frame {frame_number} (diff={mean_diff:.2f})")
+                            should_scan = True
+            
+            scanner._prev_frame = frame.copy()
+            
+            if not should_scan:
+                # logger.debug(f"Skipping frame {frame_number} (static)")
+                pass
+            
+            if should_scan:
                 # Check cache first
                 ocr_results = None
                 if scanner._cache:
@@ -1102,9 +1190,13 @@ def scan_video(video_path: str,
                         cache_hits += 1
                 
                 if ocr_results is None:
-                    # Run OCR
+                    # Run OCR (with scaling)
                     ocr_frames_processed += 1
-                    _, ocr_results = scanner._ocr_processor.process_frame(frame, frame_number)
+                    _, ocr_results = scanner._ocr_processor.process_frame(
+                        frame, 
+                        frame_number,
+                        scale=ocr_scale
+                    )
                     
                     # Cache the results
                     if scanner._cache:

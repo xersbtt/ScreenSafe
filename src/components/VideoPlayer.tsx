@@ -18,8 +18,12 @@ interface VideoPlayerProps {
     selectedDetection?: Detection | null;
     // Callback for resizing detection bbox
     onBboxChange?: (detectionId: string, bbox: { x: number; y: number; width: number; height: number }) => void;
+    onResizeStart?: (detectionId: string) => void;
+    onResizeEnd?: (detectionId: string) => void;
     // Callback for clicking/selecting a detection from the video overlay
     onDetectionClick?: (detection: Detection) => void;
+    // Callback for deselecting (clicking on empty space)
+    onDeselect?: () => void;
 }
 
 export interface VideoPlayerHandle {
@@ -43,7 +47,10 @@ export const VideoPlayer = forwardRef<VideoPlayerHandle, VideoPlayerProps>(({
     previewBlur = true,
     selectedDetection = null,
     onBboxChange,
-    onDetectionClick
+    onResizeStart,
+    onResizeEnd,
+    onDetectionClick,
+    onDeselect
 }, ref) => {
     const videoRef = useRef<HTMLVideoElement>(null);
     const containerRef = useRef<HTMLDivElement>(null);
@@ -59,7 +66,9 @@ export const VideoPlayer = forwardRef<VideoPlayerHandle, VideoPlayerProps>(({
 
     // Handle resize drag
     useEffect(() => {
-        if (!resizeDrag || !onBboxChange || !videoRef.current) return;
+        if (!resizeDrag || !onBboxChange || !videoRef.current) {
+            return;
+        }
 
         const video = videoRef.current;
         const videoWidth = video.videoWidth;
@@ -117,6 +126,9 @@ export const VideoPlayer = forwardRef<VideoPlayerHandle, VideoPlayerProps>(({
         };
 
         const handleMouseUp = () => {
+            if (resizeDrag && onResizeEnd) {
+                onResizeEnd(resizeDrag.detectionId);
+            }
             setResizeDrag(null);
         };
 
@@ -126,11 +138,14 @@ export const VideoPlayer = forwardRef<VideoPlayerHandle, VideoPlayerProps>(({
             window.removeEventListener('mousemove', handleMouseMove);
             window.removeEventListener('mouseup', handleMouseUp);
         };
-    }, [resizeDrag, onBboxChange]);
+    }, [resizeDrag, onBboxChange, onResizeEnd]);
 
     const handleResizeStart = useCallback((e: React.MouseEvent, detection: Detection, handle: ResizeHandle) => {
         e.stopPropagation();
         e.preventDefault();
+        if (onResizeStart) {
+            onResizeStart(detection.id);
+        }
         setResizeDrag({
             detectionId: detection.id,
             handle,
@@ -139,7 +154,6 @@ export const VideoPlayer = forwardRef<VideoPlayerHandle, VideoPlayerProps>(({
             startBbox: { ...detection.bbox }
         });
     }, []);
-
 
     // Expose methods to parent
     useImperativeHandle(ref, () => ({
@@ -185,8 +199,50 @@ export const VideoPlayer = forwardRef<VideoPlayerHandle, VideoPlayerProps>(({
         console.log('[VideoPlayer] Active detections:', activeDetections.map(d => ({ id: d.id, type: d.type, bbox: d.bbox })));
     }
 
-    // Calculate pixel position from normalized bbox
-    const getPixelPosition = (detection: Detection) => {
+    // Get interpolated bbox for current time based on framePositions (for motion tracking)
+    const getInterpolatedBbox = (detection: Detection): { x: number; y: number; width: number; height: number } => {
+        // If no frame positions, use static bbox
+        if (!detection.framePositions?.length) {
+            return detection.bbox;
+        }
+
+        // Estimate current frame (use 30fps as default, could be improved with actual video fps)
+        const fps = 30;
+        const currentFrame = Math.floor(currentTime * fps);
+        const positions = detection.framePositions;
+
+        // Find surrounding positions for interpolation
+        let prev = positions[0];
+        let next = positions[positions.length - 1];
+
+        for (let i = 0; i < positions.length; i++) {
+            const pos = positions[i];
+            if (pos[0] <= currentFrame) {
+                prev = pos;
+            }
+            if (pos[0] >= currentFrame) {
+                next = pos;
+                break;
+            }
+        }
+
+        // If same position or no interpolation needed
+        if (prev[0] === next[0]) {
+            return { x: prev[1], y: prev[2], width: prev[3], height: prev[4] };
+        }
+
+        // Linear interpolation between positions
+        const t = Math.max(0, Math.min(1, (currentFrame - prev[0]) / (next[0] - prev[0])));
+        return {
+            x: prev[1] + t * (next[1] - prev[1]),
+            y: prev[2] + t * (next[2] - prev[2]),
+            width: prev[3] + t * (next[3] - prev[3]),
+            height: prev[4] + t * (next[4] - prev[4])
+        };
+    };
+
+    // Calculate pixel position from a bbox
+    const getPixelPositionFromBbox = (bbox: { x: number; y: number; width: number; height: number }) => {
         if (!containerRef.current || !videoRef.current) return null;
 
         const video = videoRef.current;
@@ -206,16 +262,27 @@ export const VideoPlayer = forwardRef<VideoPlayerHandle, VideoPlayerProps>(({
         const offsetY = (displayHeight - scaledHeight) / 2;
 
         return {
-            left: offsetX + detection.bbox.x * scaledWidth,
-            top: offsetY + detection.bbox.y * scaledHeight,
-            width: detection.bbox.width * scaledWidth,
-            height: detection.bbox.height * scaledHeight
+            left: offsetX + bbox.x * scaledWidth,
+            top: offsetY + bbox.y * scaledHeight,
+            width: bbox.width * scaledWidth,
+            height: bbox.height * scaledHeight
         };
+    };
+
+    // Calculate pixel position from normalized detection bbox (with interpolation support)
+    const getPixelPosition = (detection: Detection) => {
+        const bbox = getInterpolatedBbox(detection);
+        return getPixelPositionFromBbox(bbox);
     };
 
     return (
         <div className="video-player">
-            <div className="video-container" ref={containerRef}>
+            <div className="video-container" ref={containerRef} onClick={(e) => {
+                // Only deselect if clicking directly on the container (not on child elements)
+                if (e.target === e.currentTarget || (e.target as HTMLElement).tagName === 'VIDEO') {
+                    onDeselect?.();
+                }
+            }}>
                 <video
                     ref={videoRef}
                     src={videoUrl}
@@ -253,36 +320,6 @@ export const VideoPlayer = forwardRef<VideoPlayerHandle, VideoPlayerProps>(({
                             />
                         );
                     })}
-                    {/* Highlight overlay for selected detection (even if not in current time range) */}
-                    {selectedDetection && (() => {
-                        const pos = getPixelPosition(selectedDetection);
-                        if (!pos) return null;
-                        return (
-                            <div
-                                className="selection-highlight-overlay"
-                                style={{
-                                    left: `${pos.left}px`,
-                                    top: `${pos.top}px`,
-                                    width: `${pos.width}px`,
-                                    height: `${pos.height}px`
-                                }}
-                            >
-                                {/* Resize handles - only show when onBboxChange is available */}
-                                {onBboxChange && (
-                                    <>
-                                        <div className="resize-handle nw" onMouseDown={(e) => handleResizeStart(e, selectedDetection, 'nw')} />
-                                        <div className="resize-handle n" onMouseDown={(e) => handleResizeStart(e, selectedDetection, 'n')} />
-                                        <div className="resize-handle ne" onMouseDown={(e) => handleResizeStart(e, selectedDetection, 'ne')} />
-                                        <div className="resize-handle e" onMouseDown={(e) => handleResizeStart(e, selectedDetection, 'e')} />
-                                        <div className="resize-handle se" onMouseDown={(e) => handleResizeStart(e, selectedDetection, 'se')} />
-                                        <div className="resize-handle s" onMouseDown={(e) => handleResizeStart(e, selectedDetection, 's')} />
-                                        <div className="resize-handle sw" onMouseDown={(e) => handleResizeStart(e, selectedDetection, 'sw')} />
-                                        <div className="resize-handle w" onMouseDown={(e) => handleResizeStart(e, selectedDetection, 'w')} />
-                                    </>
-                                )}
-                            </div>
-                        );
-                    })()}
                 </div>
 
                 {/* Selection tool overlay */}
@@ -293,6 +330,53 @@ export const VideoPlayer = forwardRef<VideoPlayerHandle, VideoPlayerProps>(({
                         onSelectionComplete={onSelectionComplete}
                     />
                 )}
+
+                {/* Highlight overlay for selected detection - rendered LAST so resize handles are on top */}
+                {/* Highlight overlay for selected detection (Visual Layer) */}
+                {selectedDetection && (() => {
+                    const pos = getPixelPosition(selectedDetection);
+                    if (!pos) return null;
+                    return (
+                        <>
+                            {/* 1. Visual Highlight Ring (Animated, pointer-events: none to pass through) */}
+                            <div
+                                className="selection-highlight-overlay"
+                                style={{
+                                    left: `${pos.left}px`,
+                                    top: `${pos.top}px`,
+                                    width: `${pos.width}px`,
+                                    height: `${pos.height}px`,
+                                    pointerEvents: 'none' // Ensure the visual layer doesn't block interactions
+                                }}
+                            />
+
+                            {/* 2. Interactive Resize Controls (Stable, High Z-Index, No Animation) */}
+                            {onBboxChange && (
+                                <div
+                                    className="resize-controls-group"
+                                    style={{
+                                        position: 'absolute',
+                                        left: `${pos.left}px`,
+                                        top: `${pos.top}px`,
+                                        width: `${pos.width}px`,
+                                        height: `${pos.height}px`,
+                                        zIndex: 10000, // Extremely high z-index
+                                        pointerEvents: 'none' // Container passes events, children capture them
+                                    }}
+                                >
+                                    <div className="resize-handle nw" style={{ pointerEvents: 'auto' }} onMouseDown={(e) => handleResizeStart(e, selectedDetection, 'nw')} />
+                                    <div className="resize-handle n" style={{ pointerEvents: 'auto' }} onMouseDown={(e) => handleResizeStart(e, selectedDetection, 'n')} />
+                                    <div className="resize-handle ne" style={{ pointerEvents: 'auto' }} onMouseDown={(e) => handleResizeStart(e, selectedDetection, 'ne')} />
+                                    <div className="resize-handle e" style={{ pointerEvents: 'auto' }} onMouseDown={(e) => handleResizeStart(e, selectedDetection, 'e')} />
+                                    <div className="resize-handle se" style={{ pointerEvents: 'auto' }} onMouseDown={(e) => handleResizeStart(e, selectedDetection, 'se')} />
+                                    <div className="resize-handle s" style={{ pointerEvents: 'auto' }} onMouseDown={(e) => handleResizeStart(e, selectedDetection, 's')} />
+                                    <div className="resize-handle sw" style={{ pointerEvents: 'auto' }} onMouseDown={(e) => handleResizeStart(e, selectedDetection, 'sw')} />
+                                    <div className="resize-handle w" style={{ pointerEvents: 'auto' }} onMouseDown={(e) => handleResizeStart(e, selectedDetection, 'w')} />
+                                </div>
+                            )}
+                        </>
+                    );
+                })()}
             </div>
         </div>
     );

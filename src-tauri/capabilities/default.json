@@ -9,11 +9,17 @@
     "core:default",
     "core:window:allow-destroy",
     "core:window:allow-close",
+    "core:path:default",
     "opener:default",
     "dialog:allow-open",
     "dialog:allow-save",
     "fs:default",
+    "fs:allow-exists",
+    "fs:allow-mkdir",
     "fs:allow-read-text-file",
-    "fs:allow-write-text-file"
+    "fs:allow-write-text-file",
+    "fs:allow-appdata-read-recursive",
+    "fs:allow-appdata-write-recursive",
+    "fs:allow-appdata-meta-recursive"
   ]
 }

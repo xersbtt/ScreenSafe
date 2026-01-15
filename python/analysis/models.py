@@ -111,6 +111,8 @@ class AnalysisSettings(BaseModel):
     detect_addresses: bool = True
     detect_api_keys: bool = True
     frame_skip: int = 1  # Analyze every Nth frame (1 = all frames)
+    ocr_scale: float = 1.0  # Scale factor for OCR (1.0 = native, 2.0 = upscaled)
+    smart_sampling: bool = True  # Adaptive sampling based on visual activity
 
 
 class VideoInfo(BaseModel):
@@ -133,7 +135,7 @@ class AnalysisRequest(BaseModel):
 class AnalysisResult(BaseModel):
     """Final result of video analysis"""
     video_info: VideoInfo
-    detections: list[Detection]
+    detections: List[Detection]
     analysis_time: float  # seconds
     settings_used: AnalysisSettings
 
@@ -161,6 +163,8 @@ class WSMessageType(str, Enum):
     PREVIEW_FRAME = "preview_frame"  # Analyze single frame with current config
     GET_TEXT_AT_CLICK = "get_text_at_click"  # Get OCR text at clicked position
     GET_TEXT_IN_REGION = "get_text_in_region"  # Get OCR text from drawn region
+    # System info messages
+    SYSTEM_INFO = "system_info"  # Broadcast GPU/system capabilities on connect
 
 
 class WSMessage(BaseModel):

@@ -17,17 +17,48 @@ fn start_python_sidecar() -> Result<Child, std::io::Error> {
         .and_then(|p| p.parent().map(|p| p.to_path_buf()))
         .unwrap_or_else(|| std::env::current_dir().unwrap());
 
-    let python_script = exe_dir.join("python").join("main.py");
+    // Try multiple paths for Python script (handles both dev and prod)
+    let possible_paths = [
+        exe_dir.join("python").join("main.py"), // Prod: next to exe
+        exe_dir
+            .join("..")
+            .join("..")
+            .join("..")
+            .join("python")
+            .join("main.py"), // Dev: src-tauri/target/debug -> project root
+        exe_dir
+            .join("..")
+            .join("..")
+            .join("..")
+            .join("..")
+            .join("python")
+            .join("main.py"), // Dev macOS: deeper nesting
+        std::env::current_dir()
+            .unwrap()
+            .join("python")
+            .join("main.py"), // Current working directory
+    ];
+
+    let python_script = possible_paths
+        .iter()
+        .find(|p| p.exists())
+        .cloned()
+        .unwrap_or_else(|| exe_dir.join("python").join("main.py"));
+
+    println!("[ScreenSafe] Python script path: {:?}", python_script);
 
     // Try different Python executables
     let python_commands = ["python", "python3", "py"];
+
+    // Get the python directory for working dir
+    let python_dir = python_script.parent().unwrap_or(&exe_dir);
 
     for python_cmd in &python_commands {
         let result = Command::new(python_cmd)
             .arg(&python_script)
             .arg("--port")
             .arg("9876")
-            .current_dir(&exe_dir)
+            .current_dir(python_dir)
             .spawn();
 
         if let Ok(child) = result {

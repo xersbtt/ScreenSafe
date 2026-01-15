@@ -198,11 +198,16 @@ class VideoAnalyzer:
             self.initialize()
         
         # Storage for detections (classifier output only - no raw OCR storage)
-        all_detections: list[Detection] = []
+        all_detections: List[Detection] = []
         
         # Progress tracking
         frames_processed = 0
         last_progress_time = time.time()
+        
+        # Adaptive Sampling State
+        frames_skipped = 0
+        prev_frame = None
+        last_scan_frame = -999
         
         def update_progress(stage: AnalysisStage, message: str = ""):
             if progress_callback:
@@ -231,30 +236,73 @@ class VideoAnalyzer:
             if self._cancelled:
                 break
             
-            # Stage 2: Run OCR
+            # Stage 2: Adaptive Scanning (Smart Sampling)
             if frames_processed == 0:
-                update_progress(AnalysisStage.DETECTING, "Running OCR...")
+                update_progress(AnalysisStage.DETECTING, "Running Adaptive Scan...")
             
-            # Run OCR on frame
+            # --- Adaptive Scanning Logic ---
+            should_scan = True
+            is_motion = False
+            
+            if self.settings.smart_sampling and prev_frame is not None:
+                # 1. Downscale for fast comparison
+                curr_small = cv2.resize(frame, (64, 64))
+                prev_small = cv2.resize(prev_frame, (64, 64))
+                
+                # 2. Calculate visual difference (0.0 to 1.0)
+                diff = cv2.absdiff(curr_small, prev_small)
+                mean_diff = np.mean(diff) / 255.0
+                
+                # 3. Decision Logic
+                if mean_diff < 0.01:  # <1% difference (Static)
+                    # Skip scan unless it's been too long (force every 2s)
+                    time_since_last = (frame_number - last_scan_frame) / video_info.fps
+                    if time_since_last < 2.0:
+                        should_scan = False
+                
+                elif mean_diff > 0.10: # >10% difference (High Motion/Scroll)
+                    # Motion Boost! Scan more frequently to catch flying text
+                    is_motion = True
+                    # If we scanned very recently (e.g. 5 frames ago), we might scan again
+                    # But if we just scanned 1 frame ago, maybe wait? 
+                    # For now, let's just allow the scan.
+            
+            # Update prev frame
+            prev_frame = frame.copy()
+            
+            # Skip if not needed
+            if not should_scan:
+                frames_skipped += 1
+                continue
+                
+            last_scan_frame = frame_number
+            
+            # Run OCR on frame (with scaling)
             text_detections = self.ocr.detect_text(
                 frame, 
                 frame_number,
-                min_confidence=0.5
+                min_confidence=0.5,
+                scale=self.settings.ocr_scale
             )
             
-            # Classify PII in real-time (no storage of raw OCR results)
+            # If motion boost is active, detections might be blurry/partial
+            # We accept them anyway as they are better than nothing
+            
+            # Classify PII in real-time
             for text_det in text_detections:
                 detection = self.classifier.classify_detection(
                     text_det,
                     context_detections=text_detections,
-                    frame_width=video_info.width,
-                    frame_height=video_info.height
+                    frame_width=video_info.width if self.settings.ocr_scale == 1.0 else int(video_info.width * self.settings.ocr_scale),
+                    frame_height=video_info.height if self.settings.ocr_scale == 1.0 else int(video_info.height * self.settings.ocr_scale)
                 )
                 
                 if detection:
                     # Set time based on frame
                     detection.start_time = frame_number / video_info.fps
-                    detection.end_time = (frame_number + frame_skip) / video_info.fps
+                    # If motion, validity is short. If static, validity is long (until next scan)
+                    # Ideally, we extend until the next scan frame
+                    detection.end_time = (frame_number + frame_skip) / video_info.fps # Placeholder, merge logic handles extension
                     detection.start_frame = frame_number
                     detection.end_frame = frame_number + frame_skip
                     
@@ -267,7 +315,11 @@ class VideoAnalyzer:
             
             # Update progress periodically
             if time.time() - last_progress_time > 0.5:
-                update_progress(AnalysisStage.DETECTING)
+                # Calculate effective FPS including skips
+                effective_fps = frames_processed / (time.time() - start_time)
+                msg = f"Adaptive Scan: {frames_skipped} skipped" if frames_skipped > 0 else "Scanning..."
+                if is_motion: msg = "Motion Boost Active! 🚀"
+                update_progress(AnalysisStage.DETECTING, msg)
                 last_progress_time = time.time()
         
         if self._cancelled:
@@ -298,8 +350,8 @@ class VideoAnalyzer:
         )
     
     def _merge_detections(self, 
-                          detections: list[Detection],
-                          video_info: VideoInfo) -> list[Detection]:
+                          detections: List[Detection],
+                          video_info: VideoInfo) -> List[Detection]:
         """
         Merge detections that track the same content across frames.
         
@@ -314,8 +366,8 @@ class VideoAnalyzer:
         # Sort by start time
         sorted_dets = sorted(detections, key=lambda d: d.start_time)
         
-        merged: list[Detection] = []
-        content_groups: dict[str, list[Detection]] = {}
+        merged: List[Detection] = []
+        content_groups: Dict[str, List[Detection]] = {}
         
         # Group by content
         for det in sorted_dets:

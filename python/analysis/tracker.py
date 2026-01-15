@@ -6,7 +6,7 @@ Used for the Magic Wand tool and consistent detection IDs.
 """
 
 import numpy as np
-from typing import Optional, Callable
+from typing import Optional, Callable, List, Dict, Union, Any
 import logging
 
 from .models import Detection, BoundingBox
@@ -72,9 +72,9 @@ class ObjectTracker:
             raise
     
     def update(self, 
-               detections: list[Detection],
+               detections: List[Detection],
                frame_width: int,
-               frame_height: int) -> list[Detection]:
+               frame_height: int) -> List[Detection]:
         """
         Update tracker with new detections and assign track IDs.
         
@@ -156,12 +156,12 @@ class SimpleBBoxTracker:
     def __init__(self, iou_threshold: float = 0.3, max_age: int = 10):
         self.iou_threshold = iou_threshold
         self.max_age = max_age
-        self.tracks: dict[str, dict] = {}
+        self.tracks: Dict[str, Any] = {}
         self.next_id = 1
     
     def update(self, 
-               detections: list[Detection],
-               frame_number: int) -> list[Detection]:
+               detections: List[Detection],
+               frame_number: int) -> List[Detection]:
         """Update tracks with new detections"""
         
         if not detections:
@@ -256,7 +256,7 @@ class SimpleBBoxTracker:
         self.next_id = 1
 
 
-def get_tracker(use_norfair: bool = True) -> ObjectTracker | SimpleBBoxTracker:
+def get_tracker(use_norfair: bool = True) -> Union[ObjectTracker, SimpleBBoxTracker]:
     """Get appropriate tracker based on availability"""
     if use_norfair:
         try:

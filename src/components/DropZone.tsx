@@ -1,5 +1,6 @@
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useState, useEffect } from 'react';
 import { open } from '@tauri-apps/plugin-dialog';
+import { getCurrentWebview } from '@tauri-apps/api/webview';
 
 interface DropZoneProps {
     onFileSelect: (file: File) => void;
@@ -12,33 +13,74 @@ const FORMAT_LABELS = ['MP4', 'WebM', 'MOV', 'AVI'];
 export const DropZone: React.FC<DropZoneProps> = ({ onFileSelect, onPathSelect, onOpenProject }) => {
     const [isDragOver, setIsDragOver] = useState(false);
 
+    // Listen for Tauri's native drag-drop event to get real file paths
+    useEffect(() => {
+        let unlisten: (() => void) | undefined;
+
+        const setupDragDropListener = async () => {
+            try {
+                const webview = getCurrentWebview();
+                unlisten = await webview.onDragDropEvent((event) => {
+                    if (event.payload.type === 'enter') {
+                        setIsDragOver(true);
+                    } else if (event.payload.type === 'drop') {
+                        setIsDragOver(false);
+                        const paths = event.payload.paths;
+                        if (paths.length > 0) {
+                            const filePath = paths[0];
+                            // Check if it's a video file
+                            if (filePath.match(/\.(mp4|webm|mov|avi)$/i)) {
+                                console.log('[DropZone] Tauri drop event - file path:', filePath);
+                                if (onPathSelect) {
+                                    onPathSelect(filePath);
+                                } else {
+                                    // Fallback: create a synthetic file object
+                                    const fileName = filePath.split(/[/\\]/).pop() || 'video.mp4';
+                                    const syntheticFile = new File([], fileName, { type: 'video/mp4' });
+                                    (syntheticFile as any).path = filePath;
+                                    onFileSelect(syntheticFile);
+                                }
+                            } else {
+                                alert('Please drop a video file (MP4, WebM, MOV, or AVI)');
+                            }
+                        }
+                    }
+                });
+            } catch (err) {
+                console.error('[DropZone] Failed to set up Tauri drag-drop listener:', err);
+            }
+        };
+
+        setupDragDropListener();
+
+        return () => {
+            if (unlisten) {
+                unlisten();
+            }
+        };
+    }, [onFileSelect, onPathSelect]);
+
+    // Browser drag-over/leave for visual feedback (actual drop handled by Tauri)
     const handleDragOver = useCallback((e: React.DragEvent) => {
         e.preventDefault();
         e.stopPropagation();
-        setIsDragOver(true);
+        // Visual state is now handled by Tauri event, but keep this for fallback
     }, []);
 
     const handleDragLeave = useCallback((e: React.DragEvent) => {
         e.preventDefault();
         e.stopPropagation();
+        // Use browser event to detect when drag leaves the window
+        // since Tauri 2.0 doesn't provide a 'leave' event
         setIsDragOver(false);
     }, []);
 
     const handleDrop = useCallback((e: React.DragEvent) => {
         e.preventDefault();
         e.stopPropagation();
-        setIsDragOver(false);
-
-        const files = e.dataTransfer.files;
-        if (files.length > 0) {
-            const file = files[0];
-            if (file.name.match(/\.(mp4|webm|mov|avi)$/i)) {
-                onFileSelect(file);
-            } else {
-                alert('Please drop a video file (MP4, WebM, MOV, or AVI)');
-            }
-        }
-    }, [onFileSelect]);
+        // Note: Actual file handling is done by Tauri's onDragDropEvent
+        // This is just to prevent browser default behavior
+    }, []);
 
     const handleBrowseClick = useCallback(async () => {
         console.log('[DropZone] Browse clicked, attempting Tauri dialog...');

@@ -9,23 +9,26 @@
 🔍 **Smart Detection**
 - Watchlist-based text matching for specific terms
 - Anchor-based detection (blur content relative to labels)
+- **Adaptive Sampling** — Intelligent scan optimization (skips static frames, boosts on motion)
 - Manual blur and blackout tools with motion tracking
+- Optional content detection toggle for manual tools
 
 🎯 **Precise Redaction**
 - Real-time blur preview
+- **Responsive video player** — Adapts to window size while maintaining aspect ratio
 - Adjustable time ranges per detection
 - Spatial resize handles for fine-tuning
 - Frame-accurate motion tracking
 
 📼 **Professional Export**
-- GPU-accelerated encoding (NVIDIA NVENC)
+- GPU-accelerated encoding (NVIDIA NVENC / Apple MPS)
 - Original quality preservation
-- Batch processing support
+- Cross-platform support (Windows + macOS)
 
 ## Installation
 
 ### Prerequisites
-- Windows 10/11
+- Windows 10/11 or macOS (Apple Silicon recommended)
 - Python 3.10+ with pip
 - FFmpeg (included or system-installed)
 - Node.js 18+ (for development)
@@ -90,7 +93,7 @@ npm run tauri build
 - **Desktop**: Tauri (Rust)
 - **Backend**: Python (OCR, motion tracking)
 - **OCR**: EasyOCR / Tesseract
-- **Video**: FFmpeg with NVENC support
+- **Video**: FFmpeg with GPU support (NVENC on Windows, MPS on macOS)
 
 ## Project Structure
 

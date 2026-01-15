@@ -1,8 +1,9 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
 import { DropZone, VideoPlayer, VideoControls, Timeline, DetectionSidebar, AnalysisOverlay, ConfigPanel, SettingsModal } from './components';
-import type { WatchItem, Anchor, AppSettings } from './components';
+import type { WatchItem, Anchor } from './components';
+import type { AppSettings } from './lib/config';
 import { Detection, VideoState, AnalysisProgress } from './types';
-import { cancelAnalysis, getFilePath, updateConfig, getTextInRegion, startScan } from './lib/tauri';
+import { cancelAnalysis, getFilePath, updateConfig, getTextInRegion, startScan, getGpuStatus, onSystemInfoUpdate, connectSidecar } from './lib/tauri';
 import { convertFileSrc } from '@tauri-apps/api/core';
 import { open, save } from '@tauri-apps/plugin-dialog';
 import { readTextFile, writeTextFile } from '@tauri-apps/plugin-fs';
@@ -68,6 +69,7 @@ function App() {
   const [selectedDetectionId, setSelectedDetectionId] = useState<string | null>(null);
   const [isSelectionMode, setIsSelectionMode] = useState(false);
   const [selectionType, setSelectionType] = useState<'blur' | 'blackout'>('blur');
+  const [enableContentDetection, setEnableContentDetection] = useState(true);
   const [sidebarTab, setSidebarTab] = useState<SidebarTab>('config');
 
   // PII Wizard Config state
@@ -90,39 +92,44 @@ function App() {
   } | null>(null);
   const [showSettingsModal, setShowSettingsModal] = useState(false);
   const [showAboutModal, setShowAboutModal] = useState(false);
-  const [appSettings, setAppSettings] = useState(() => {
-    // Load settings from localStorage on init
-    const saved = localStorage.getItem('screensafe-settings');
-    if (saved) {
-      try {
-        return JSON.parse(saved);
-      } catch {
-        // Fall back to defaults if JSON is invalid
-      }
-    }
-    return {
-      theme: 'dark' as 'dark' | 'light',
-      blurStrength: 25,
-      autoSaveProjects: false,
-      ocrLanguage: 'eng' as 'eng' | 'auto',
-      exportQuality: 'high' as 'low' | 'medium' | 'high',
-      exportCodec: 'h264' as 'h264' | 'h265' | 'vp9',
-      // Export processing settings
-      scanInterval: 15,
-      motionThreshold: 30,
-      ocrScale: 1.0
-    };
+  const [appSettings, setAppSettings] = useState<AppSettings>({
+    theme: 'dark',
+    blurStrength: 25,
+    autoSaveProjects: false,
+    ocrLanguage: 'eng',
+    exportQuality: 'high',
+    exportCodec: 'h264',
+    scanInterval: 30,
+    motionThreshold: 30,
+    ocrScale: 0.75,
+    enableRegexPatterns: false
   });
+  const [settingsLoaded, setSettingsLoaded] = useState(false);
+
+  // Load settings from config file on mount
+  useEffect(() => {
+    import('./lib/config').then(({ loadSettings }) => {
+      loadSettings().then((loaded) => {
+        setAppSettings(loaded);
+        setSettingsLoaded(true);
+        console.log('[App] Settings loaded from config file');
+      });
+    });
+  }, []);
 
   // Apply theme to document when it changes
   useEffect(() => {
     document.body.setAttribute('data-theme', appSettings.theme);
   }, [appSettings.theme]);
 
-  // Persist settings to localStorage when they change
+  // Persist settings to config file when they change (after initial load)
   useEffect(() => {
-    localStorage.setItem('screensafe-settings', JSON.stringify(appSettings));
-  }, [appSettings]);
+    if (settingsLoaded) {
+      import('./lib/config').then(({ saveSettings }) => {
+        saveSettings(appSettings);
+      });
+    }
+  }, [appSettings, settingsLoaded]);
 
   // Anchor pick flow: 'idle' -> 'pickText' -> 'drawBox' -> 'idle'
   const [anchorPickStep, setAnchorPickStep] = useState<'idle' | 'pickText' | 'drawBox'>('idle');
@@ -161,6 +168,34 @@ function App() {
 
   // Blur preview toggle (on by default)
   const [previewBlur, setPreviewBlur] = useState(true);
+
+  // GPU status (received from Python backend on connection)
+  const [gpuStatus, setGpuStatus] = useState<{ available: boolean; name: string | null; type: string | null }>(() => getGpuStatus());
+
+  // Subscribe to GPU status updates from Python sidecar
+  useEffect(() => {
+    // Register callback for GPU status updates
+    onSystemInfoUpdate((info) => {
+      setGpuStatus({ available: info.gpuAvailable, name: info.gpuName, type: info.gpuType });
+    });
+
+    // Connect to sidecar on startup to receive GPU status immediately
+    connectSidecar().then(() => {
+      // After connection, check the status
+      const status = getGpuStatus();
+      setGpuStatus(status);
+    }).catch((err) => {
+      console.log('[App] Sidecar connection pending, will retry on first action:', err);
+    });
+
+    // Also check after a delay in case message arrived before callback was set
+    const timer = setTimeout(() => {
+      const status = getGpuStatus();
+      setGpuStatus(status);
+    }, 1000);
+
+    return () => clearTimeout(timer);
+  }, []);
 
   const videoPlayerRef = useRef<VideoPlayerHandle>(null);
 
@@ -702,7 +737,7 @@ function App() {
 
 
   // Export handler
-  const handleExport = useCallback(async (previewMode: boolean = false) => {
+  const handleExport = useCallback(async () => {
     if (!_filePath) {
       setToastMessage('❌ No video loaded');
       setTimeout(() => setToastMessage(null), 3000);
@@ -715,6 +750,24 @@ function App() {
     if (redactedDetections.length === 0 && enabledAnchors.length === 0) {
       setToastMessage('❌ No redactions to export. Please add detections or anchors.');
       setTimeout(() => setToastMessage(null), 4000);
+      return;
+    }
+
+    // Show save dialog for user to choose output location
+    const ext = _filePath.split('.').pop() || 'mp4';
+    const baseName = _filePath.split(/[/\\]/).pop()?.replace(/\.[^.]+$/, '') || 'video';
+    const defaultName = `${baseName}_redacted.${ext}`;
+
+    const outputPath = await save({
+      title: 'Export Redacted Video',
+      defaultPath: defaultName,
+      filters: [
+        { name: 'Video Files', extensions: ['mp4', 'mov', 'mkv', 'avi', 'webm'] }
+      ]
+    });
+
+    if (!outputPath) {
+      // User cancelled the save dialog
       return;
     }
 
@@ -766,9 +819,8 @@ function App() {
           scanZones: scanZones.filter(z => z.enabled).map(z => ({ start: z.start, end: z.end })),
           codec: appSettings.exportCodec,
           quality: appSettings.exportQuality,
-          preview: previewMode,  // Low-res preview mode
         },
-        undefined,  // Let Python determine output path
+        outputPath,  // User-selected output path
         {
           onProgress: (progress, stage) => {
             console.log(`[Export] ${progress.toFixed(1)}% - ${stage}`);
@@ -788,48 +840,11 @@ function App() {
               eta
             });
           },
-          onComplete: (outputPath, success, detectedBlurs) => {
+          onComplete: (completedPath, success) => {
             setExportProgress({ isExporting: false, progress: 0, stage: '', eta: '' });
             if (success) {
-              if (previewMode) {
-                // Auto-load preview video into player for in-app review
-                import('@tauri-apps/api/core').then(({ convertFileSrc }) => {
-                  const previewUrl = convertFileSrc(outputPath);
-                  setVideoUrl(previewUrl);
-                });
-
-                // Convert detected OCR blurs to Detection objects and add to list
-                if (detectedBlurs && detectedBlurs.length > 0) {
-                  const ocrDetections: Detection[] = detectedBlurs.map((blur, index) => ({
-                    id: `ocr-${blur.type}-${blur.frame}-${index}`,
-                    type: blur.type as 'anchor' | 'watchlist',
-                    content: blur.source,
-                    confidence: 1.0,
-                    bbox: blur.bbox,
-                    startTime: blur.time,
-                    endTime: (blur as unknown as { end_time?: number }).end_time || blur.time + 1 / 30,
-                    isRedacted: true,  // Enable by default, user can disable
-                    trackId: undefined,
-                    framePositions: undefined
-                  }));
-
-                  // Merge with existing detections (avoid duplicates based on frame+position)
-                  setDetections(prev => {
-                    const existingIds = new Set(prev.map(d => d.id));
-                    const newDetections = ocrDetections.filter(d => !existingIds.has(d.id));
-                    console.log(`[App] Adding ${newDetections.length} OCR-detected blur regions`);
-                    return [...prev, ...newDetections];
-                  });
-
-                  setToastMessage(`✅ Preview ready! Found ${detectedBlurs.length} OCR blur regions. Review and toggle any false positives.`);
-                } else {
-                  setToastMessage('✅ Preview ready! Review for any gaps, click anywhere to add blur boxes.');
-                }
-                setTimeout(() => setToastMessage(null), 5000);
-              } else {
-                setToastMessage(`✅ Export complete! Saved to: ${outputPath}`);
-                setTimeout(() => setToastMessage(null), 5000);
-              }
+              setToastMessage(`✅ Export complete! Saved to: ${completedPath}`);
+              setTimeout(() => setToastMessage(null), 5000);
             } else {
               setToastMessage('❌ Export failed. Check console for details.');
               setTimeout(() => setToastMessage(null), 4000);
@@ -897,7 +912,7 @@ function App() {
                 endTime: blur.end_time || blur.time + 1 / 30,
                 isRedacted: true,
                 trackId: undefined,
-                framePositions: undefined
+                framePositions: blur.frame_positions  // Motion tracking positions from scan
               }));
 
               // Replace old OCR/scan detections with new scan results
@@ -1057,10 +1072,45 @@ function App() {
     setIsSelectionMode(prev => !prev);
   }, []);
 
+  // Handle resize start (cache original detection for delta calculation)
+  const dragStartDetection = useRef<Detection | null>(null);
+
+  const handleResizeStart = useCallback((detectionId: string) => {
+    const d = detections.find(d => d.id === detectionId);
+    if (d) {
+      dragStartDetection.current = JSON.parse(JSON.stringify(d));
+    }
+  }, [detections]);
+
+  const handleResizeEnd = useCallback((detectionId: string) => {
+    const original = dragStartDetection.current;
+    const current = detections.find(d => d.id === detectionId);
+
+    if (original && current && original.id === detectionId && original.framePositions?.length) {
+      const dx = current.bbox.x - original.bbox.x;
+      const dy = current.bbox.y - original.bbox.y;
+      const dw = current.bbox.width - original.bbox.width;
+      const dh = current.bbox.height - original.bbox.height;
+
+      const newFramePositions = original.framePositions.map(([f, x, y, w, h]) => [
+        f,
+        x + dx,
+        y + dy,
+        w + dw,
+        h + dh
+      ] as [number, number, number, number, number]);
+
+      setDetections(prev => prev.map(d =>
+        d.id === detectionId ? { ...d, framePositions: newFramePositions } : d
+      ));
+    }
+    dragStartDetection.current = null;
+  }, [detections]);
+
   // Handle bbox change from spatial resize
   const handleBboxChange = useCallback((detectionId: string, bbox: { x: number; y: number; width: number; height: number }) => {
     setDetections(prev => prev.map(d =>
-      d.id === detectionId ? { ...d, bbox } : d
+      d.id === detectionId ? { ...d, bbox, framePositions: undefined } : d
     ));
     setHasUnsavedChanges(true);
   }, []);
@@ -1074,30 +1124,32 @@ function App() {
     const newDetection: Detection = {
       id: detectionId,
       type: isBlackout ? 'blackout' : 'manual',
-      content: isBlackout ? 'Blackout region' : 'Analyzing content...',
+      content: enableContentDetection
+        ? (isBlackout ? 'Blackout region' : 'Analyzing content...')
+        : (isBlackout ? 'Blackout (static)' : 'Static blur'),
       confidence: 1.0,
       bbox,
-      startTime: frameTime,  // Start from when user selected (will be refined by tracking)
-      endTime: duration,     // Until end (will be refined by tracking)
+      startTime: Math.max(0, frameTime - 0.1),  // Start 100ms before selection to ensure PII is fully covered
+      endTime: duration,     // Until end (will be refined by tracking if enabled)
       isRedacted: true,
       trackId: undefined
     };
-    console.log('[App] Adding manual blur:', { id: detectionId, bbox, startTime: frameTime });
+    console.log('[App] Adding manual blur:', { id: detectionId, bbox, startTime: frameTime, contentDetection: enableContentDetection });
     setDetections(prev => [...prev, newDetection]);
     setHasUnsavedChanges(true);
     setIsSelectionMode(false);
 
-    // Start OCR-based content tracking to find exact time range
-    if (_filePath) {
+    // Start OCR-based content tracking to find exact time range (only if enabled)
+    if (_filePath && enableContentDetection) {
       try {
         const { trackRegion } = await import('./lib/tauri');
         // Send timestamp directly - no fps assumption (VFR support)
         const timestamp = frameTime;
 
-        console.log('[App] Starting motion tracking for', detectionId, 'at', timestamp, 's');
+        console.log('[App] Starting content detection for', detectionId, 'at', timestamp, 's');
 
         await trackRegion(_filePath, detectionId, bbox, timestamp, (result) => {
-          console.log('[App] Motion tracking result:', result.framePositions?.length || 0, 'positions');
+          console.log('[App] Content detection result:', result.framePositions?.length || 0, 'positions');
 
           // Update detection with tracked time range and motion positions
           setDetections(prev => prev.map(d =>
@@ -1107,7 +1159,7 @@ function App() {
                 startTime: result.startTime,
                 endTime: result.endTime,
                 content: result.framePositions?.length
-                  ? `Motion tracked (${result.framePositions.length} positions)`
+                  ? `Tracked (${result.framePositions.length} frames)`
                   : 'Manual selection',
                 framePositions: result.framePositions
               }
@@ -1115,14 +1167,14 @@ function App() {
           ));
         });
       } catch (err) {
-        console.error('[App] Tracking error:', err);
+        console.error('[App] Content detection error:', err);
         // Update content label even if tracking fails
         setDetections(prev => prev.map(d =>
           d.id === detectionId ? { ...d, content: 'Manual selection' } : d
         ));
       }
     }
-  }, [videoState.duration, _filePath, selectionType]);
+  }, [videoState.duration, _filePath, selectionType, enableContentDetection]);
 
   // Keyboard shortcuts for frame-by-frame navigation
   useEffect(() => {
@@ -1286,14 +1338,7 @@ function App() {
       <header className="header">
         <div className="header-brand">
           <div className="header-logo">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <rect x="3" y="3" width="18" height="18" rx="2" />
-              <circle cx="12" cy="12" r="3" fill="currentColor" />
-              <line x1="12" y1="3" x2="12" y2="6" />
-              <line x1="12" y1="18" x2="12" y2="21" />
-              <line x1="3" y1="12" x2="6" y2="12" />
-              <line x1="18" y1="12" x2="21" y2="12" />
-            </svg>
+            <img src="/assets/icon.png" alt="ScreenSafe" />
           </div>
           <span className="header-title">ScreenSafe</span>
         </div>
@@ -1327,7 +1372,7 @@ function App() {
               >
                 🔍 Scan
               </button>
-              <button className="btn btn-primary" onClick={() => handleExport(false)} title="Export video with applied redactions">
+              <button className="btn btn-primary" onClick={handleExport} title="Export video with applied redactions">
                 📹 Export
               </button>
               <button className="btn btn-ghost" onClick={() => setShowSettingsModal(true)} title="Configure application preferences">
@@ -1336,6 +1381,13 @@ function App() {
               <button className="btn btn-ghost" onClick={() => setShowAboutModal(true)} title="About ScreenSafe">
                 ℹ️ About
               </button>
+              {/* GPU Status Indicator */}
+              <div
+                className={`gpu-indicator ${gpuStatus.available ? 'gpu-active' : 'gpu-inactive'}`}
+                title={gpuStatus.available ? `GPU: ${gpuStatus.name || 'Active'} (${gpuStatus.type || 'Unknown'})` : 'GPU: Not detected (CPU mode)'}
+              >
+                {gpuStatus.available ? '🟢 GPU' : '⚪ CPU'}
+              </div>
             </>
           )}
         </div>
@@ -1365,7 +1417,10 @@ function App() {
                   previewBlur={previewBlur}
                   selectedDetection={selectedDetectionId ? detections.find(d => d.id === selectedDetectionId) : null}
                   onBboxChange={handleBboxChange}
+                  onResizeStart={handleResizeStart}
+                  onResizeEnd={handleResizeEnd}
                   onDetectionClick={handleDetectionClick}
+                  onDeselect={() => setSelectedDetectionId(null)}
                 />
 
                 {/* Anchor Pick Mode Overlay - Step 1: Draw box around anchor text */}
@@ -1595,6 +1650,8 @@ function App() {
                   }
                 }}
                 isBlackoutActive={isSelectionMode && selectionType === 'blackout'}
+                enableContentDetection={enableContentDetection}
+                onContentDetectionToggle={() => setEnableContentDetection(prev => !prev)}
               />
             </div>
 
@@ -1620,6 +1677,7 @@ function App() {
                   anchors={anchors}
                   scanZones={scanZones}
                   videoDuration={videoState.duration}
+                  currentTime={videoState.currentTime}
                   onWatchListChange={handleWatchListChange}
                   onAnchorsChange={handleAnchorsChange}
                   onScanZonesChange={setScanZones}
@@ -1729,7 +1787,7 @@ function App() {
             <div className="about-content">
               <img src="/assets/icon.png" alt="ScreenSafe" className="about-icon" />
               <h3>ScreenSafe</h3>
-              <p className="about-version">Version 1.0.1</p>
+              <p className="about-version">Version 1.1.0</p>
               <p className="about-tagline">Privacy-first video redaction tool</p>
               <p className="about-description">
                 Automatically detect and blur sensitive information in screen recordings before sharing.

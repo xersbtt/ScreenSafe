@@ -30,17 +30,17 @@
 .header-logo {
   width: 28px;
   height: 28px;
-  background: linear-gradient(135deg, var(--color-accent-primary), var(--color-accent-tertiary));
   border-radius: var(--radius-sm);
   display: flex;
   align-items: center;
   justify-content: center;
+  overflow: hidden;
 }
 
-.header-logo svg {
-  width: 18px;
-  height: 18px;
-  color: white;
+.header-logo img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
 }
 
 .header-title {
@@ -56,6 +56,35 @@
   display: flex;
   gap: var(--space-sm);
   -webkit-app-region: no-drag;
+}
+
+/* GPU Status Indicator */
+.gpu-indicator {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  border-radius: var(--radius-full);
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-medium);
+  user-select: none;
+  transition: all var(--transition-fast);
+}
+
+.gpu-indicator.gpu-active {
+  background: rgba(34, 197, 94, 0.15);
+  color: #22c55e;
+  border: 1px solid rgba(34, 197, 94, 0.3);
+}
+
+.gpu-indicator.gpu-inactive {
+  background: rgba(156, 163, 175, 0.15);
+  color: #9ca3af;
+  border: 1px solid rgba(156, 163, 175, 0.3);
+}
+
+.gpu-indicator:hover {
+  transform: scale(1.05);
 }
 
 /* ---------- Main Content ---------- */
@@ -369,9 +398,37 @@
 
 .scan-zone-times {
   display: flex;
-  align-items: center;
+  align-items: stretch;
   gap: var(--space-xs);
   flex: 1;
+}
+
+.scan-zone-time-group {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+}
+
+.scan-zone-time-group .btn {
+  width: 100%;
+}
+
+.scan-zone-time-group input {
+  width: 50px;
+  padding: var(--space-xs);
+  background: var(--color-bg-tertiary);
+  border: 1px solid var(--color-glass-border);
+  border-radius: var(--radius-sm);
+  font-size: var(--font-size-sm);
+  color: var(--color-text-primary);
+  text-align: center;
+}
+
+.scan-zone-arrow {
+  align-self: center;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-sm);
 }
 
 .scan-zone-times input {
@@ -388,6 +445,7 @@
 .scan-zone-duration {
   font-size: var(--font-size-xs);
   color: var(--color-text-muted);
+  align-self: center;
 }
 
 .scan-zone-delete {
@@ -398,6 +456,7 @@
   font-size: var(--font-size-lg);
   padding: 0;
   line-height: 1;
+  align-self: center;
 }
 
 .scan-zone-delete:hover {
@@ -630,22 +689,29 @@
   padding: var(--space-md);
   background: var(--color-bg-primary);
   position: relative;
+  min-height: 0;
+  /* Important for flex child to shrink */
 }
 
 .video-container {
   position: relative;
-  max-width: 100%;
-  max-height: 100%;
+  max-width: calc(100% - var(--space-lg));
+  /* Responsive height: viewport minus toolbar, controls, timeline, and padding */
+  height: calc(100vh - 380px);
   background: #000;
   border-radius: var(--radius-lg);
-  overflow: hidden;
+  overflow: visible;
+  /* Allow resize handles to extend beyond container */
   box-shadow: var(--shadow-lg);
 }
 
 .video-container video {
   display: block;
+  width: auto;
+  height: 100%;
   max-width: 100%;
-  max-height: 60vh;
+  max-height: 100%;
+  object-fit: contain;
 }
 
 .video-overlay {
@@ -917,7 +983,6 @@
 
 .video-seekbar {
   flex: 1;
-  max-width: 400px;
   height: 6px;
   background: var(--color-bg-tertiary);
   border-radius: var(--radius-full);
@@ -2426,8 +2491,8 @@
 }
 
 .about-icon {
-  width: 96px;
-  height: 96px;
+  width: 128px;
+  height: 128px;
   margin-bottom: var(--space-md);
   border-radius: var(--radius-lg);
   object-fit: contain;
