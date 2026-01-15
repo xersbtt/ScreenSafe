@@ -130,26 +130,64 @@ jobs:
         run: |
           mkdir -p release
           
-          # Find and copy ARM64 DMG
+          # === ARM64 Build ===
+          ARM_APP=$(find src-tauri/target/aarch64-apple-darwin/release/bundle/macos -name "*.app" 2>/dev/null | head -1)
+          if [ -d "$ARM_APP" ]; then
+            echo "Found ARM64 app: $ARM_APP"
+            
+            # Copy Python sidecar INSIDE the .app bundle (where Rust expects it)
+            cp -R python "$ARM_APP/Contents/MacOS/python"
+            echo "Copied Python sidecar into $ARM_APP/Contents/MacOS/python"
+            
+            # Copy assets into the app bundle
+            [ -d "assets" ] && cp -R assets "$ARM_APP/Contents/MacOS/assets"
+            
+            # Rebuild DMG with the modified .app bundle (original DMG was built before Python was added)
+            echo "Rebuilding ARM64 DMG with Python sidecar..."
+            cd src-tauri/target/aarch64-apple-darwin/release/bundle
+            rm -f dmg/*.dmg
+            hdiutil create -volname "ScreenSafe" -srcfolder macos -ov -format UDZO "dmg/ScreenSafe-arm64.dmg"
+            cd -
+          fi
+          
+          # Copy rebuilt ARM64 DMG
           ARM_DMG=$(find src-tauri/target/aarch64-apple-darwin/release/bundle/dmg -name "*.dmg" 2>/dev/null | head -1)
           if [ -n "$ARM_DMG" ]; then
             echo "Found ARM64 DMG: $ARM_DMG"
             cp "$ARM_DMG" "release/ScreenSafe-${{ github.ref_name }}-macos-arm64.dmg"
           fi
           
-          # Find and copy x86_64 DMG
+          # === x86_64 Build ===
+          X86_APP=$(find src-tauri/target/x86_64-apple-darwin/release/bundle/macos -name "*.app" 2>/dev/null | head -1)
+          if [ -d "$X86_APP" ]; then
+            echo "Found x86_64 app: $X86_APP"
+            
+            # Copy Python sidecar INSIDE the .app bundle
+            cp -R python "$X86_APP/Contents/MacOS/python"
+            echo "Copied Python sidecar into $X86_APP/Contents/MacOS/python"
+            
+            # Copy assets into the app bundle
+            [ -d "assets" ] && cp -R assets "$X86_APP/Contents/MacOS/assets"
+            
+            # Rebuild DMG with the modified .app bundle
+            echo "Rebuilding x86_64 DMG with Python sidecar..."
+            cd src-tauri/target/x86_64-apple-darwin/release/bundle
+            rm -f dmg/*.dmg
+            hdiutil create -volname "ScreenSafe" -srcfolder macos -ov -format UDZO "dmg/ScreenSafe-x64.dmg"
+            cd -
+          fi
+          
+          # Copy rebuilt x86_64 DMG
           X86_DMG=$(find src-tauri/target/x86_64-apple-darwin/release/bundle/dmg -name "*.dmg" 2>/dev/null | head -1)
           if [ -n "$X86_DMG" ]; then
             echo "Found x86_64 DMG: $X86_DMG"
             cp "$X86_DMG" "release/ScreenSafe-${{ github.ref_name }}-macos-x64.dmg"
           fi
           
-          # Create portable ZIP with .app bundle and Python sidecar for ARM64
+          # Create portable ZIP with the MODIFIED .app bundle for ARM64
           if [ -d "src-tauri/target/aarch64-apple-darwin/release/bundle/macos" ]; then
             mkdir -p release/macos-arm64
             cp -R src-tauri/target/aarch64-apple-darwin/release/bundle/macos/*.app release/macos-arm64/
-            cp -R python release/macos-arm64/
-            [ -d "assets" ] && cp -R assets release/macos-arm64/
             cd release && zip -r "ScreenSafe-${{ github.ref_name }}-macos-arm64-portable.zip" macos-arm64 && cd ..
             rm -rf release/macos-arm64
           fi
@@ -158,8 +196,6 @@ jobs:
           if [ -d "src-tauri/target/x86_64-apple-darwin/release/bundle/macos" ]; then
             mkdir -p release/macos-x64
             cp -R src-tauri/target/x86_64-apple-darwin/release/bundle/macos/*.app release/macos-x64/
-            cp -R python release/macos-x64/
-            [ -d "assets" ] && cp -R assets release/macos-x64/
             cd release && zip -r "ScreenSafe-${{ github.ref_name }}-macos-x64-portable.zip" macos-x64 && cd ..
             rm -rf release/macos-x64
           fi
