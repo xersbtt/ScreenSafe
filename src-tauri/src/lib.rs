@@ -79,8 +79,21 @@ async fn run_setup(app_handle: tauri::AppHandle) -> Result<(), String> {
         }),
     );
 
-    // Find Python executable
+    // Find Python executable - check common locations including macOS paths
+    #[cfg(target_os = "macos")]
+    let python_cmds = [
+        "python3",
+        "python",
+        "/opt/homebrew/bin/python3", // Apple Silicon Homebrew
+        "/usr/local/bin/python3",    // Intel Homebrew
+        "/usr/bin/python3",          // System Python
+        "/Library/Frameworks/Python.framework/Versions/3.11/bin/python3",
+        "/Library/Frameworks/Python.framework/Versions/3.12/bin/python3",
+    ];
+
+    #[cfg(not(target_os = "macos"))]
     let python_cmds = ["python", "python3", "py"];
+
     let python_cmd = python_cmds
         .iter()
         .find(|cmd| {
@@ -90,7 +103,7 @@ async fn run_setup(app_handle: tauri::AppHandle) -> Result<(), String> {
                 .map(|o| o.status.success())
                 .unwrap_or(false)
         })
-        .ok_or("Python not found. Please install Python 3.10+ from python.org")?;
+        .ok_or("Python not found. Please install Python 3.10+ from python.org or via 'brew install python'")?;
 
     println!("[ScreenSafe] Using Python: {}", python_cmd);
 
