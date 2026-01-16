@@ -54,6 +54,20 @@ fn start_python_sidecar() -> Result<Child, std::io::Error> {
     let python_dir = python_script.parent().unwrap_or(&exe_dir);
 
     for python_cmd in &python_commands {
+        #[cfg(windows)]
+        let result = {
+            use std::os::windows::process::CommandExt;
+            const CREATE_NO_WINDOW: u32 = 0x08000000;
+            Command::new(python_cmd)
+                .arg(&python_script)
+                .arg("--port")
+                .arg("9876")
+                .current_dir(python_dir)
+                .creation_flags(CREATE_NO_WINDOW)
+                .spawn()
+        };
+
+        #[cfg(not(windows))]
         let result = Command::new(python_cmd)
             .arg(&python_script)
             .arg("--port")

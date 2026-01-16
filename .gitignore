@@ -32,3 +32,4 @@ python/models/
 
 # Tauri build
 src-tauri/target/
+release/
