@@ -4,6 +4,7 @@ ScreenSafe AI Sidecar - WebSocket Server
 Main entry point for the Python AI sidecar.
 Communicates with Tauri frontend via WebSocket.
 """
+from __future__ import annotations
 
 import asyncio
 import json
@@ -151,6 +152,7 @@ async def handle_message(websocket, message: str):
             scan_zones = payload.get("scan_zones", [])
             codec = payload.get("codec", "h264")
             quality = payload.get("quality", "high")
+            include_audio = payload.get("include_audio", True)
             preview_mode = payload.get("preview", False)  # Low-res preview mode
             
             if not video_path:
@@ -169,12 +171,28 @@ async def handle_message(websocket, message: str):
             logger.info(f"Config: {len(detections_data)} detections, {len(anchors_data)} anchors, {len(watch_list)} watch items")
             logger.info(f"Settings: scan_interval={scan_interval}, motion_threshold={motion_threshold}, codec={codec}, quality={quality}")
             
+            # Check FFmpeg availability and warn user if needed
+            import shutil
+            from pathlib import Path
+            ffmpeg_available = shutil.which('ffmpeg') is not None
+            # Also check common macOS Homebrew paths
+            if not ffmpeg_available:
+                for path in ['/opt/homebrew/bin/ffmpeg', '/usr/local/bin/ffmpeg', '/opt/local/bin/ffmpeg']:
+                    if Path(path).exists():
+                        ffmpeg_available = True
+                        break
+            if not ffmpeg_available and codec in ('h265', 'vp9'):
+                await send_message(websocket, WSMessageType.EXPORT_PROGRESS, {
+                    "progress": 0,
+                    "stage": f"⚠️ FFmpeg not installed - falling back to H.264. Install FFmpeg for {codec.upper()} support: brew install ffmpeg"
+                })
+            
             # Start export in background
             current_task = asyncio.create_task(
                 run_export(
                     websocket, video_path, output_path, detections_data, anchors_data,
                     watch_list, scan_interval, motion_threshold, ocr_scale, scan_zones,
-                    codec, quality, preview_mode
+                    codec, quality, include_audio, preview_mode
                 )
             )
         
@@ -368,7 +386,7 @@ async def run_export(websocket, video_path: str, output_path: str, detections_da
                      scan_interval: int = 90, motion_threshold: float = 30.0,
                      ocr_scale: float = 1.0, scan_zones: list = None,
                      codec: str = 'h264', quality: str = 'high',
-                     preview_mode: bool = False):
+                     include_audio: bool = True, preview_mode: bool = False):
     """Run video export with redactions applied"""
     from analysis import export_video_optimized, preview_export_video, Detection as DetectionModel, BoundingBox
     
@@ -455,7 +473,8 @@ async def run_export(websocket, video_path: str, output_path: str, detections_da
                     use_cache=True,
                     use_gpu=True,
                     codec=codec,
-                    quality=quality
+                    quality=quality,
+                    include_audio=include_audio
                 )
             )
         

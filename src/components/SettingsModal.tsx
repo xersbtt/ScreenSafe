@@ -7,6 +7,7 @@ export interface AppSettings {
     ocrLanguage: 'eng' | 'auto';
     exportQuality: 'low' | 'medium' | 'high';
     exportCodec: 'h264' | 'h265' | 'vp9';
+    includeAudio: boolean;
     // Export processing settings
     scanInterval: number;
     motionThreshold: number;
@@ -39,6 +40,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
         ocrLanguage: 'eng',
         exportQuality: 'high',
         exportCodec: 'h264',
+        includeAudio: true,
         scanInterval: 30,
         motionThreshold: 30,
         ocrScale: 0.75,
@@ -148,6 +150,20 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                             <option value="h265">H.265 (smaller files)</option>
                             <option value="vp9">VP9 (web-friendly)</option>
                         </select>
+                    </div>
+
+                    {/* Include Audio */}
+                    <div className="settings-group">
+                        <label className="settings-label">Include Audio in Export</label>
+                        <button
+                            className={`settings-toggle-single ${safeSettings.includeAudio ? 'active' : ''}`}
+                            onClick={() => handleChange('includeAudio', !safeSettings.includeAudio)}
+                        >
+                            {safeSettings.includeAudio ? '✓ Enabled' : 'Disabled'}
+                        </button>
+                        <small className="settings-hint">
+                            Turn off to export video without audio track
+                        </small>
                     </div>
 
                     {/* Section divider */}

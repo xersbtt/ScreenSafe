@@ -19,8 +19,14 @@ fn get_python_dir() -> PathBuf {
         .unwrap_or_else(|| std::env::current_dir().unwrap());
 
     // Check multiple possible locations
+    // On macOS bundle: Contents/MacOS/ScreenSafe -> Contents/Resources/python
+    // On Windows: same directory as exe
     let possible_paths = [
+        // macOS bundled app: exe is in Contents/MacOS, resources in Contents/Resources
+        exe_dir.join("..").join("Resources").join("python"),
+        // Windows/Linux production: python folder next to exe
         exe_dir.join("python"),
+        // Development mode: project root
         exe_dir.join("..").join("..").join("..").join("python"),
         exe_dir
             .join("..")
@@ -211,6 +217,20 @@ async fn run_setup(app_handle: tauri::AppHandle) -> Result<(), String> {
             }
         }
     } else {
+        // On macOS, PyTorch will use MPS (Metal Performance Shaders) for Apple Silicon
+        #[cfg(target_os = "macos")]
+        {
+            let _ = app_handle.emit(
+                "setup-progress",
+                serde_json::json!({
+                    "progress": 25,
+                    "message": "Installing PyTorch...",
+                    "detail": "GPU acceleration via Metal (MPS) will be used on Apple Silicon"
+                }),
+            );
+            println!("[ScreenSafe] macOS detected - PyTorch will use MPS on Apple Silicon");
+        }
+        #[cfg(not(target_os = "macos"))]
         println!("[ScreenSafe] No CUDA detected, will use CPU PyTorch");
     }
 
@@ -394,14 +414,14 @@ pub fn run() {
             start_sidecar_command
         ])
         .on_window_event(|_window, event| {
-            if let tauri::WindowEvent::Destroyed = event {
+            // Stop sidecar when window close is requested (before WebView destruction)
+            if let tauri::WindowEvent::CloseRequested { .. } = event {
+                println!("[ScreenSafe] Window close requested, stopping sidecar...");
                 stop_sidecar();
             }
         })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
-
-    stop_sidecar();
 }
 
 #[tauri::command]

@@ -395,6 +395,7 @@ export async function startExport(
         scanZones?: Array<{ start: number; end: number }>;
         codec?: 'h264' | 'h265' | 'vp9';
         quality?: 'low' | 'medium' | 'high';
+        includeAudio?: boolean;
         preview?: boolean;  // Low-res preview mode
     },
     outputPath?: string,
@@ -432,6 +433,7 @@ export async function startExport(
         scan_zones: config?.scanZones || [],
         codec: config?.codec ?? 'h264',
         quality: config?.quality ?? 'high',
+        include_audio: config?.includeAudio ?? true,
         preview: config?.preview ?? false,
     });
 }

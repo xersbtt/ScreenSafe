@@ -78,7 +78,7 @@ def _check_ffmpeg_nvenc() -> bool:
     """Check if FFmpeg with NVENC is available."""
     try:
         result = subprocess.run(
-            ['ffmpeg', '-hide_banner', '-encoders'],
+            [_get_ffmpeg_path(), '-hide_banner', '-encoders'],
             capture_output=True, text=True, timeout=5
         )
         has_nvenc = 'h264_nvenc' in result.stdout
@@ -89,15 +89,28 @@ def _check_ffmpeg_nvenc() -> bool:
         return False
 
 
+# Global FFmpeg path (set when detected)
+_FFMPEG_PATH = None
+
 def _check_ffmpeg_available() -> bool:
     """Check if FFmpeg is available."""
+    global _FFMPEG_PATH
+    
     ffmpeg_path = shutil.which('ffmpeg')
     if ffmpeg_path:
         logger.info(f"FFmpeg found at: {ffmpeg_path}")
+        _FFMPEG_PATH = ffmpeg_path
         return True
     else:
-        # Try common Windows FFmpeg locations
+        # Try common macOS and Windows FFmpeg locations
         common_paths = [
+            # macOS Homebrew (Apple Silicon)
+            '/opt/homebrew/bin/ffmpeg',
+            # macOS Homebrew (Intel)
+            '/usr/local/bin/ffmpeg',
+            # MacPorts
+            '/opt/local/bin/ffmpeg',
+            # Windows
             r'C:\ffmpeg\bin\ffmpeg.exe',
             r'C:\Program Files\ffmpeg\bin\ffmpeg.exe',
             r'C:\tools\ffmpeg\bin\ffmpeg.exe',
@@ -105,9 +118,14 @@ def _check_ffmpeg_available() -> bool:
         for path in common_paths:
             if Path(path).exists():
                 logger.info(f"FFmpeg found at: {path}")
+                _FFMPEG_PATH = path
                 return True
         logger.warning("FFmpeg not found in PATH or common locations")
         return False
+
+def _get_ffmpeg_path() -> str:
+    """Get the detected FFmpeg path or 'ffmpeg' as fallback."""
+    return _FFMPEG_PATH if _FFMPEG_PATH else 'ffmpeg'
 
 
 @dataclass
@@ -265,6 +283,7 @@ class OptimizedVideoExporter:
         self._use_ffmpeg = _check_ffmpeg_available()
         self._use_nvenc = _check_ffmpeg_nvenc() if self._use_ffmpeg else False
         self._preview_mode = False  # Half-resolution preview mode
+        self._available_encoders = None  # Cached available encoders
         
         if self._use_nvenc:
             logger.info("GPU acceleration available (NVENC)")
@@ -272,6 +291,38 @@ class OptimizedVideoExporter:
             logger.info("FFmpeg available (CPU encoding)")
         else:
             logger.info("Using OpenCV fallback for encoding")
+    
+    def _get_available_encoders(self) -> set:
+        """Get set of available FFmpeg encoders."""
+        if self._available_encoders is not None:
+            return self._available_encoders
+        
+        self._available_encoders = set()
+        try:
+            result = subprocess.run(
+                [_get_ffmpeg_path(), '-hide_banner', '-encoders'],
+                capture_output=True, text=True, timeout=5
+            )
+            # Check both stdout and stderr (FFmpeg outputs to different streams)
+            output = result.stdout + result.stderr
+            
+            # Check for common encoders
+            encoder_checks = [
+                'h264_videotoolbox', 'hevc_videotoolbox',  # macOS
+                'h264_nvenc', 'hevc_nvenc',                 # NVIDIA
+                'libx264', 'libx265', 'libvpx-vp9'          # Software
+            ]
+            for encoder in encoder_checks:
+                if encoder in output:
+                    self._available_encoders.add(encoder)
+            
+            logger.info(f"Available encoders: {self._available_encoders}")
+        except Exception as e:
+            logger.warning(f"Failed to detect encoders: {e}")
+            # Assume basic software encoders
+            self._available_encoders = {'libx264'}
+        
+        return self._available_encoders
     
     def export(self,
                output_path: str,
@@ -287,7 +338,8 @@ class OptimizedVideoExporter:
                use_cache: bool = True,
                use_gpu: bool = True,
                codec: str = 'h264',
-               quality: str = 'high') -> bool:
+               quality: str = 'high',
+               include_audio: bool = True) -> bool:
         """
         Export video with blurs applied.
         
@@ -344,8 +396,14 @@ class OptimizedVideoExporter:
         
         # Prepare output writer
         if self._use_ffmpeg:
-            out = self._create_ffmpeg_writer(output_path, codec, quality)
+            out = self._create_ffmpeg_writer(output_path, codec, quality, source_video=self.video_path if include_audio else None)
         else:
+            # FFmpeg not available - warn user if they requested H.265 or VP9
+            if codec in ('h265', 'vp9'):
+                logger.warning(
+                    f"FFmpeg not installed - cannot export as {codec.upper()}. "
+                    f"Falling back to H.264. Install FFmpeg for full codec support: brew install ffmpeg"
+                )
             out = self._create_opencv_writer(output_path)
         
         if out is None:
@@ -458,38 +516,60 @@ class OptimizedVideoExporter:
         
         return out
     
-    def _create_ffmpeg_writer(self, output_path: str, codec: str = 'h264', quality: str = 'high') -> Optional[subprocess.Popen]:
+    def _create_ffmpeg_writer(self, output_path: str, codec: str = 'h264', quality: str = 'high', source_video: str = None) -> Optional[subprocess.Popen]:
         """Create FFmpeg writer process with optional GPU acceleration.
         
         Args:
             output_path: Output video path
             codec: Video codec - 'h264', 'h265', or 'vp9'
             quality: Quality preset - 'low', 'medium', or 'high'
+            source_video: Source video path for audio stream copying
         """
-        # Map codec and GPU availability to encoder
-        encoder_map = {
-            'h264': ('h264_nvenc', 'libx264'),
-            'h265': ('hevc_nvenc', 'libx265'),
-            'vp9': ('libvpx-vp9', 'libvpx-vp9'),  # VP9 has no NVENC
-        }
+        # Detect available encoders
+        available_encoders = self._get_available_encoders()
         
-        # Quality to CRF/preset mapping (lower CRF = better quality)
+        # Quality to CRF/preset mapping (lower CRF = better quality, higher = smaller file)
         quality_map = {
-            'low': ('ultrafast', '28'),
-            'medium': ('fast', '23'),
-            'high': ('slow', '18'),
+            'low': ('ultrafast', '28'),       # Fast encode, reasonable quality
+            'medium': ('fast', '23'),          # Good balance
+            'high': ('slow', '18'),            # High quality
         }
-        
-        hw_encoder, sw_encoder = encoder_map.get(codec, ('h264_nvenc', 'libx264'))
         preset, crf = quality_map.get(quality, ('fast', '23'))
         
-        # Use GPU encoder if available for h264/h265
-        if self._use_nvenc and codec in ('h264', 'h265'):
-            encoder = hw_encoder
-            extra_args = ['-preset', 'fast', '-rc', 'vbr', '-cq', crf]
+        # Select encoder based on codec and availability
+        # Priority: Hardware (VideoToolbox/NVENC) -> Software (libx264/libx265)
+        if codec == 'h264':
+            if 'h264_videotoolbox' in available_encoders:
+                encoder = 'h264_videotoolbox'
+                extra_args = ['-q:v', crf]  # VideoToolbox uses -q:v for quality
+            elif 'h264_nvenc' in available_encoders:
+                encoder = 'h264_nvenc'
+                extra_args = ['-preset', 'fast', '-rc', 'vbr', '-cq', crf]
+            else:
+                encoder = 'libx264'
+                extra_args = ['-preset', preset, '-crf', crf]
+        elif codec == 'h265':
+            if 'hevc_videotoolbox' in available_encoders:
+                encoder = 'hevc_videotoolbox'
+                extra_args = ['-q:v', crf]  # VideoToolbox uses -q:v for quality
+            elif 'hevc_nvenc' in available_encoders:
+                encoder = 'hevc_nvenc'
+                extra_args = ['-preset', 'fast', '-rc', 'vbr', '-cq', crf]
+            elif 'libx265' in available_encoders:
+                encoder = 'libx265'
+                extra_args = ['-preset', preset, '-crf', crf]
+            else:
+                # H.265 not available, fall back to H.264
+                logger.warning(f"No H.265 encoder available, falling back to H.264")
+                return self._create_ffmpeg_writer(output_path, 'h264', quality, source_video)
+        elif codec == 'vp9':
+            encoder = 'libvpx-vp9'
+            extra_args = ['-crf', crf, '-b:v', '0']
         else:
-            encoder = sw_encoder
+            encoder = 'libx264'
             extra_args = ['-preset', preset, '-crf', crf]
+        
+        logger.info(f"Selected encoder: {encoder} for codec {codec}")
         
         # Calculate output dimensions (half for preview mode)
         out_width = self.video_info.width // 2 if self._preview_mode else self.video_info.width
@@ -497,19 +577,43 @@ class OptimizedVideoExporter:
         
         logger.info(f"FFmpeg output dimensions: {out_width}x{out_height} (preview={self._preview_mode})")
         
+        # Add h265 tag for Apple QuickTime compatibility
+        if codec == 'h265':
+            extra_args.extend(['-tag:v', 'hvc1'])
+        
+        # Build command - add source video as second input for audio
         cmd = [
-            'ffmpeg', '-y',
+            _get_ffmpeg_path(), '-y',
+            # Input 0: Raw video frames from pipe
             '-f', 'rawvideo',
             '-vcodec', 'rawvideo',
             '-pix_fmt', 'bgr24',
             '-s', f'{out_width}x{out_height}',
             '-r', str(self.video_info.fps),
             '-i', '-',
+        ]
+        
+        # Input 1: Source video for audio (if provided)
+        if source_video:
+            cmd.extend(['-i', source_video])
+        
+        # Output settings
+        cmd.extend([
             '-c:v', encoder,
             *extra_args,
             '-pix_fmt', 'yuv420p',
-            output_path
-        ]
+        ])
+        
+        # Map streams: video from pipe (0:v), audio from source (1:a)
+        if source_video:
+            cmd.extend([
+                '-map', '0:v:0',       # Video from pipe
+                '-map', '1:a:0?',      # Audio from source (optional - ? ignores if no audio)
+                '-c:a', 'aac',         # Re-encode audio to AAC for compatibility
+                '-b:a', '192k',        # Audio bitrate
+            ])
+        
+        cmd.append(output_path)
         
         try:
             process = subprocess.Popen(
@@ -517,7 +621,7 @@ class OptimizedVideoExporter:
                 stdin=subprocess.PIPE,
                 stderr=subprocess.DEVNULL
             )
-            logger.info(f"Using FFmpeg encoder: {encoder}")
+            logger.info(f"Using FFmpeg encoder: {encoder} (audio: {'yes' if source_video else 'no'})")
             return process
         except Exception as e:
             logger.warning(f"Failed to start FFmpeg, falling back to OpenCV: {e}")
@@ -938,7 +1042,8 @@ def export_video_optimized(video_path: str,
                            use_cache: bool = True,
                            use_gpu: bool = True,
                            codec: str = 'h264',
-                           quality: str = 'high') -> bool:
+                           quality: str = 'high',
+                           include_audio: bool = True) -> bool:
     """
     Convenience function to export a redacted video using optimized exporter.
     """
@@ -972,7 +1077,8 @@ def export_video_optimized(video_path: str,
         use_cache,
         use_gpu,
         codec,
-        quality
+        quality,
+        include_audio
     )
 
 

@@ -143,6 +143,7 @@ function App() {
     ocrLanguage: 'eng',
     exportQuality: 'high',
     exportCodec: 'h264',
+    includeAudio: true,
     scanInterval: 30,
     motionThreshold: 30,
     ocrScale: 0.75,
@@ -863,6 +864,7 @@ function App() {
           scanZones: scanZones.filter(z => z.enabled).map(z => ({ start: z.start, end: z.end })),
           codec: appSettings.exportCodec,
           quality: appSettings.exportQuality,
+          includeAudio: appSettings.includeAudio,
         },
         outputPath,  // User-selected output path
         {

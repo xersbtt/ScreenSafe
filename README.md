@@ -21,8 +21,9 @@
 - Frame-accurate motion tracking
 
 📼 **Professional Export**
-- GPU-accelerated encoding (NVIDIA NVENC / Apple MPS)
-- Original quality preservation
+- GPU-accelerated encoding (NVIDIA NVENC / Apple VideoToolbox)
+- H.264, H.265, and VP9 codec support
+- Optional audio inclusion toggle
 - Cross-platform support (Windows + macOS)
 
 ## Installation
@@ -30,7 +31,7 @@
 ### Prerequisites
 - Windows 10/11 or macOS (Apple Silicon recommended)
 - Python 3.10+ with pip
-- FFmpeg (included or system-installed)
+- FFmpeg
 - Node.js 18+ (for development)
 
 ### Quick Start
@@ -43,7 +44,7 @@
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/screensafe.git
+git clone https://github.com/xersbtt/screensafe.git
 cd screensafe
 
 # Install frontend dependencies
@@ -85,7 +86,7 @@ npm run tauri build
 | Key | Action |
 |-----|--------|
 | `Space` | Play/Pause |
-| `←` / `→` | Skip 5 seconds |
+| `←` / `→` | Skip 1 frame |
 
 ## Technology Stack
 

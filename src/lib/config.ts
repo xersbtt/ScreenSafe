@@ -20,6 +20,7 @@ export interface AppSettings {
     ocrLanguage: 'eng' | 'auto';
     exportQuality: 'low' | 'medium' | 'high';
     exportCodec: 'h264' | 'h265' | 'vp9';
+    includeAudio: boolean;
     // Scan/export processing settings
     scanInterval: number;
     motionThreshold: number;
@@ -37,6 +38,7 @@ const DEFAULT_SETTINGS: AppSettings = {
     ocrLanguage: 'eng',
     exportQuality: 'high',
     exportCodec: 'h264',
+    includeAudio: true,
     scanInterval: 30,
     motionThreshold: 30,
     ocrScale: 0.75,

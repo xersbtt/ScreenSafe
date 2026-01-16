@@ -5,6 +5,25 @@ All notable changes to ScreenSafe will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.1] - 2026-01-16
+
+### Added
+- **Include Audio Toggle**: New setting to export video with or without audio track. Useful for creating silent videos or when audio is not needed.
+- **VFR (Variable Frame Rate) Support**: Improved compatibility across the export pipeline.
+
+### Fixed
+- **macOS H.265 Export**: Fixed H.265 encoding on macOS by using `hevc_videotoolbox` hardware encoder instead of missing `libx265`.
+- **macOS FFmpeg Detection**: Fixed FFmpeg not being found when running from the app bundle. Now checks common Homebrew paths (`/opt/homebrew/bin`, `/usr/local/bin`).
+- **App Crash on Close**: Added `CloseRequested` event handler to properly stop the Python sidecar before WebView destruction.
+- **Python 3.9 Compatibility**: Added `from __future__ import annotations` for type hint compatibility with Python 3.9.6.
+- **Encoder Detection**: Fixed encoder detection to check both stdout and stderr from FFmpeg.
+
+### Changed
+- **Encoder Selection**: Dynamic encoder detection now supports macOS VideoToolbox, NVIDIA NVENC, and software fallback encoders.
+- **FFmpeg Path Resolution**: Uses detected FFmpeg path globally instead of relying on PATH environment variable.
+
+---
+
 ## [1.1.0] - 2026-01-16
 
 ### Added
