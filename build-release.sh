@@ -46,10 +46,10 @@ if [ -z "$APP_PATH" ]; then
 fi
 echo "Found: $APP_PATH"
 
-# Bundle Python sidecar into the app
-echo "[4/6] Bundling Python sidecar..."
+# Bundle Python scripts into the app (dependencies install on first launch)
+echo "[4/6] Bundling Python sidecar scripts..."
 cp -R python "$APP_PATH/Contents/MacOS/python"
-echo "Copied Python sidecar into $APP_PATH/Contents/MacOS/python"
+echo "Copied Python scripts into $APP_PATH/Contents/MacOS/python"
 
 # Copy assets if they exist
 if [ -d "assets" ]; then
@@ -80,6 +80,10 @@ echo "================================================"
 echo ""
 echo "Release files created in: release/"
 ls -la release/
+echo ""
+echo "Note: First-time users will see a setup dialog that installs"
+echo "Python dependencies automatically. This takes ~3-5 minutes"
+echo "on first launch, then subsequent launches are instant."
 echo ""
 echo "Ready to upload to GitHub release!"
 echo ""

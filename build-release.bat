@@ -20,7 +20,7 @@ echo [1/4] Cleaning previous builds...
 if exist "release" rmdir /s /q "release"
 mkdir release\ScreenSafe
 
-:: Build the Tauri app with NSIS installer (this embeds the frontend properly)
+:: Build the Tauri app with NSIS installer
 echo [2/4] Building Tauri app with installer (this may take a few minutes)...
 call npm run tauri build -- --bundles nsis
 if %ERRORLEVEL% neq 0 (
@@ -29,10 +29,13 @@ if %ERRORLEVEL% neq 0 (
 )
 
 :: Copy files for portable version
-:: The exe from NSIS build has the frontend embedded
 echo [3/4] Creating portable package...
 copy "src-tauri\target\release\ScreenSafe.exe" "release\ScreenSafe\" >nul
+
+:: Copy Python sidecar scripts (dependencies install on first launch)
 xcopy "python" "release\ScreenSafe\python\" /E /I /Q >nul
+
+:: Copy assets
 if exist "assets" xcopy "assets" "release\ScreenSafe\assets\" /E /I /Q >nul
 
 :: Copy NSIS installer
@@ -55,6 +58,10 @@ echo.
 echo Release files created in: release\
 echo.
 dir release\*.zip release\*.exe /b 2>nul
+echo.
+echo Note: First-time users will see a setup dialog that installs
+echo Python dependencies automatically. This takes ~3-5 minutes
+echo on first launch, then subsequent launches are instant.
 echo.
 echo Ready to upload to GitHub release!
 

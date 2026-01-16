@@ -7,5 +7,6 @@ export { AnalysisOverlay } from './AnalysisOverlay';
 export { SelectionOverlay } from './SelectionOverlay';
 export { ConfigPanel } from './ConfigPanel';
 export { SettingsModal } from './SettingsModal';
+export { SetupDialog } from './SetupDialog';
 export type { WatchItem, Anchor, ScanZone } from './ConfigPanel';
 export type { AppSettings } from './SettingsModal';

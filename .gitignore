@@ -29,6 +29,8 @@ __pycache__/
 *$py.class
 python/.ocr_cache/
 python/models/
+python/build/
+python/dist/
 
 # Tauri build
 src-tauri/target/

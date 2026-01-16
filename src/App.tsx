@@ -1,14 +1,15 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
-import { DropZone, VideoPlayer, VideoControls, Timeline, DetectionSidebar, AnalysisOverlay, ConfigPanel, SettingsModal } from './components';
+import { DropZone, VideoPlayer, VideoControls, Timeline, DetectionSidebar, AnalysisOverlay, ConfigPanel, SettingsModal, SetupDialog } from './components';
 import type { WatchItem, Anchor } from './components';
 import type { AppSettings } from './lib/config';
 import { Detection, VideoState, AnalysisProgress } from './types';
 import { cancelAnalysis, getFilePath, updateConfig, getTextInRegion, startScan, getGpuStatus, onSystemInfoUpdate, connectSidecar } from './lib/tauri';
-import { convertFileSrc } from '@tauri-apps/api/core';
+import { convertFileSrc, invoke } from '@tauri-apps/api/core';
 import { open, save } from '@tauri-apps/plugin-dialog';
 import { readTextFile, writeTextFile } from '@tauri-apps/plugin-fs';
 import type { VideoPlayerHandle } from './components/VideoPlayer';
 import './App.css';
+
 
 // Configuration: Set to true to use real AI pipeline (requires Python sidecar)
 const USE_REAL_AI = true;  // Python sidecar must be running!
@@ -61,6 +62,49 @@ type AppMode = 'idle' | 'loading' | 'analyzing' | 'editing';
 type SidebarTab = 'detections' | 'config';
 
 function App() {
+  // Setup state - show setup dialog on first launch
+  const [isSetupComplete, setIsSetupComplete] = useState<boolean | null>(null);
+
+  // Handle setup completion - start sidecar and show main app
+  const handleSetupComplete = useCallback(async () => {
+    console.log('[App] Setup complete, starting sidecar...');
+    try {
+      await invoke('start_sidecar_command');
+      console.log('[App] Sidecar started successfully');
+
+      // Wait briefly for sidecar to initialize, then connect to get GPU status
+      await new Promise(resolve => setTimeout(resolve, 2000));
+
+      // Connect to sidecar to trigger GPU status message
+      const { connectSidecar, getGpuStatus } = await import('./lib/tauri');
+      await connectSidecar();
+
+      // Update GPU status after connection
+      const status = getGpuStatus();
+      console.log('[App] GPU status after setup:', status);
+    } catch (err) {
+      console.error('[App] Failed to start sidecar:', err);
+    }
+    setIsSetupComplete(true);
+  }, []);
+
+  // Check setup status on mount
+  useEffect(() => {
+    invoke<boolean>('check_setup_complete').then((complete) => {
+      console.log('[App] Setup complete:', complete);
+      if (complete) {
+        // Already set up, start sidecar immediately
+        handleSetupComplete();
+      } else {
+        setIsSetupComplete(false);
+      }
+    }).catch((err) => {
+      console.log('[App] Setup check failed (dev mode?):', err);
+      // In dev mode or if check fails, assume setup is complete
+      setIsSetupComplete(true);
+    });
+  }, [handleSetupComplete]);
+
   // Application state
   const [mode, setMode] = useState<AppMode>('idle');
   const [videoUrl, setVideoUrl] = useState<string>('');
@@ -1284,6 +1328,23 @@ function App() {
       if (unlisten) unlisten();
     };
   }, []); // Empty deps - set up listener once, use refs for current values
+
+  // Show setup dialog if setup is needed
+  if (isSetupComplete === false) {
+    return <SetupDialog onSetupComplete={handleSetupComplete} />;
+  }
+
+  // Show loading while checking setup status
+  if (isSetupComplete === null) {
+    return (
+      <div className="app" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '100vh' }}>
+        <div style={{ textAlign: 'center', color: 'var(--color-text-secondary)' }}>
+          <div style={{ fontSize: '48px', marginBottom: '16px' }}>🔍</div>
+          <p>Checking setup status...</p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="app">
