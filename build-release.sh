@@ -68,10 +68,10 @@ cp "$DMG_DIR/ScreenSafe-$ARCH_NAME.dmg" "release/ScreenSafe-v$VERSION-macos-$ARC
 echo "[6/6] Creating portable ZIP..."
 mkdir -p release/temp
 cp -R "$APP_PATH" release/temp/
-cd release
-zip -r "ScreenSafe-v$VERSION-macos-$ARCH_NAME-portable.zip" temp
-rm -rf temp
-cd ..
+cd release/temp
+zip -r "../ScreenSafe-v$VERSION-macos-$ARCH_NAME-portable.zip" .
+cd ../..
+rm -rf release/temp
 
 echo ""
 echo "================================================"
