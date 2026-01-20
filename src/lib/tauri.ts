@@ -192,8 +192,9 @@ function handleWSMessage(message: WSMessage): void {
                     source: string;
                     frame_positions?: Array<[number, number, number, number, number]>;
                 }>;
-                console.log('[Tauri] Scan complete, detected', detectedBlurs?.length || 0, 'blur regions');
-                onScanComplete(detectedBlurs || []);
+                const cancelled = (message.payload as Record<string, unknown>).cancelled as boolean || false;
+                console.log('[Tauri] Scan complete, detected', detectedBlurs?.length || 0, 'blur regions, cancelled:', cancelled);
+                onScanComplete(detectedBlurs || [], cancelled);
                 onScanComplete = null;  // Clear callback after use
             }
             break;
@@ -395,6 +396,7 @@ export async function startExport(
         scanZones?: Array<{ start: number; end: number }>;
         codec?: 'h264' | 'h265' | 'vp9';
         quality?: 'low' | 'medium' | 'high';
+        resolution?: 'original' | '1080p' | '720p' | '480p';
         includeAudio?: boolean;
         preview?: boolean;  // Low-res preview mode
     },
@@ -433,6 +435,7 @@ export async function startExport(
         scan_zones: config?.scanZones || [],
         codec: config?.codec ?? 'h264',
         quality: config?.quality ?? 'high',
+        resolution: config?.resolution ?? 'original',
         include_audio: config?.includeAudio ?? true,
         preview: config?.preview ?? false,
     });
@@ -479,7 +482,7 @@ let onScanComplete: ((detectedBlurs: Array<{
     type: string;
     source: string;
     frame_positions?: Array<[number, number, number, number, number]>;
-}>) => void) | null = null;
+}>, cancelled: boolean) => void) | null = null;
 
 /**
  * Start video scan for blur regions WITHOUT encoding
@@ -516,7 +519,7 @@ export async function startScan(
             type: string;
             source: string;
             frame_positions?: Array<[number, number, number, number, number]>;
-        }>) => void;
+        }>, cancelled: boolean) => void;
         onError?: (error: string) => void;
     }
 ): Promise<void> {

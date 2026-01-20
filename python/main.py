@@ -131,11 +131,16 @@ async def handle_message(websocket, message: str):
             )
             
         elif msg_type == WSMessageType.CANCEL_ANALYSIS.value:
-            # Cancel ongoing analysis
+            # Cancel ongoing analysis, export, or scan
+            from analysis import cancel_current_operation
+            
             if analyzer:
                 analyzer.cancel()
-            if current_task and not current_task.done():
-                current_task.cancel()
+            cancel_current_operation()  # Sets _cancelled flag - thread pool will complete with partial results
+            # Note: We intentionally do NOT call current_task.cancel() because:
+            # - Scan/export run in thread pool via run_in_executor
+            # - asyncio.CancelledError would interrupt before partial results are returned
+            # - Instead, the _cancelled flag causes the loop to break and return partial results
             
             logger.info("Analysis cancelled by user")
         
@@ -152,6 +157,7 @@ async def handle_message(websocket, message: str):
             scan_zones = payload.get("scan_zones", [])
             codec = payload.get("codec", "h264")
             quality = payload.get("quality", "high")
+            resolution = payload.get("resolution", "original")
             include_audio = payload.get("include_audio", True)
             preview_mode = payload.get("preview", False)  # Low-res preview mode
             
@@ -169,7 +175,7 @@ async def handle_message(websocket, message: str):
             mode_str = "PREVIEW" if preview_mode else "FULL"
             logger.info(f"Starting {mode_str} export: {video_path} -> {output_path}")
             logger.info(f"Config: {len(detections_data)} detections, {len(anchors_data)} anchors, {len(watch_list)} watch items")
-            logger.info(f"Settings: scan_interval={scan_interval}, motion_threshold={motion_threshold}, codec={codec}, quality={quality}")
+            logger.info(f"Settings: scan_interval={scan_interval}, motion_threshold={motion_threshold}, codec={codec}, quality={quality}, resolution={resolution}")
             
             # Check FFmpeg availability and warn user if needed
             import shutil
@@ -192,7 +198,7 @@ async def handle_message(websocket, message: str):
                 run_export(
                     websocket, video_path, output_path, detections_data, anchors_data,
                     watch_list, scan_interval, motion_threshold, ocr_scale, scan_zones,
-                    codec, quality, include_audio, preview_mode
+                    codec, quality, resolution, include_audio, preview_mode
                 )
             )
         
@@ -381,11 +387,11 @@ async def run_analysis(websocket, video_path: str):
             analyzer.cleanup()
             analyzer = None
 
-async def run_export(websocket, video_path: str, output_path: str, detections_data: list, 
+async def run_export(websocket, video_path: str, output_path: str, detections_data: list,
                      anchors_data: list = None, watch_list: list = None,
                      scan_interval: int = 90, motion_threshold: float = 30.0,
                      ocr_scale: float = 1.0, scan_zones: list = None,
-                     codec: str = 'h264', quality: str = 'high',
+                     codec: str = 'h264', quality: str = 'high', resolution: str = 'original',
                      include_audio: bool = True, preview_mode: bool = False):
     """Run video export with redactions applied"""
     from analysis import export_video_optimized, preview_export_video, Detection as DetectionModel, BoundingBox
@@ -474,6 +480,7 @@ async def run_export(websocket, video_path: str, output_path: str, detections_da
                     use_gpu=True,
                     codec=codec,
                     quality=quality,
+                    resolution=resolution,
                     include_audio=include_audio
                 )
             )
@@ -578,7 +585,8 @@ async def run_scan(websocket, video_path: str, anchors: list, watch_list: list,
             WSMessageType.SCAN_COMPLETE,
             {
                 "success": success,
-                "detected_blurs": detected_blurs
+                "detected_blurs": detected_blurs,
+                "cancelled": result.get('cancelled', False)
             }
         )
         

@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import './SetupDialog.css';
 
 interface SetupDialogProps {
@@ -20,8 +20,12 @@ export function SetupDialog({ onSetupComplete }: SetupDialogProps) {
         progress: 0,
         message: 'Checking setup status...',
     });
+    const setupStartedRef = useRef(false);
 
     useEffect(() => {
+        // Prevent duplicate setup calls (React Strict Mode runs effects twice)
+        if (setupStartedRef.current) return;
+        setupStartedRef.current = true;
         startSetup();
     }, []);
 

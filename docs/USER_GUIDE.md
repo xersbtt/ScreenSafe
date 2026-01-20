@@ -128,10 +128,20 @@ Once you're happy with the preview:
 1.  Click the **Export** button (header).
 2.  Review settings:
     *   **Codec**: H.264 (Standard), H.265 (High Efficiency), VP9 (Web).
-    *   **Quality**: High is recommended.
+    *   **Quality**: Low (~2 Mbps), Medium (~4 Mbps), High (~8 Mbps).
+    *   **Resolution**: Original, 1080p, 720p, or 480p. Lower resolutions export faster and create smaller files.
 3.  **Process**:
     *   ScreenSafe uses **FFmpeg** with **NVENC** (NVIDIA GPU) acceleration if available for fast rendering.
     *   It re-encodes the video, burning in the blurs permanently.
+
+### Cancelling Scans/Exports (v1.1.2+)
+
+If you need to cancel a scan or export:
+1.  Click the **Cancel** button in the progress overlay.
+2.  Confirm: "Are you sure?" — Choose **Yes, Cancel** or **Continue**.
+3.  If detections were found before cancelling, you'll be asked: "Keep Detections?"
+    *   **Keep Detections**: Adds the partial results to your project.
+    *   **Discard All**: Removes partial detections and returns to editing.
 
 ---
 

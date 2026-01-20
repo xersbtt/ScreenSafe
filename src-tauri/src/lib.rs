@@ -201,7 +201,7 @@ async fn run_setup(app_handle: tauri::AppHandle) -> Result<(), String> {
                 "torch",
                 "torchvision",
                 "--index-url",
-                "https://download.pytorch.org/whl/cu121",
+                "https://download.pytorch.org/whl/cu124",
             ])
             .current_dir(&python_dir)
             .output();

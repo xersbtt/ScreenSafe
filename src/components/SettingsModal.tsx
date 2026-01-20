@@ -7,6 +7,7 @@ export interface AppSettings {
     ocrLanguage: 'eng' | 'auto';
     exportQuality: 'low' | 'medium' | 'high';
     exportCodec: 'h264' | 'h265' | 'vp9';
+    exportResolution: 'original' | '1080p' | '720p' | '480p';
     includeAudio: boolean;
     // Export processing settings
     scanInterval: number;
@@ -40,6 +41,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
         ocrLanguage: 'eng',
         exportQuality: 'high',
         exportCodec: 'h264',
+        exportResolution: 'original',
         includeAudio: true,
         scanInterval: 30,
         motionThreshold: 30,
@@ -132,9 +134,24 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                             onChange={e => handleChange('exportQuality', e.target.value as 'low' | 'medium' | 'high')}
                             className="settings-select"
                         >
-                            <option value="low">Low (faster export)</option>
-                            <option value="medium">Medium</option>
-                            <option value="high">High (best quality)</option>
+                            <option value="low">Low – ~2 Mbps (faster export)</option>
+                            <option value="medium">Medium – ~4 Mbps</option>
+                            <option value="high">High – ~8 Mbps (best quality)</option>
+                        </select>
+                    </div>
+
+                    {/* Export Resolution */}
+                    <div className="settings-group">
+                        <label className="settings-label">Export Resolution</label>
+                        <select
+                            value={safeSettings.exportResolution}
+                            onChange={e => handleChange('exportResolution', e.target.value as 'original' | '1080p' | '720p' | '480p')}
+                            className="settings-select"
+                        >
+                            <option value="original">Original (source resolution)</option>
+                            <option value="1080p">1080p (1920×1080)</option>
+                            <option value="720p">720p (1280×720)</option>
+                            <option value="480p">480p (854×480)</option>
                         </select>
                     </div>
 

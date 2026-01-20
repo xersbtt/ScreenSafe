@@ -143,6 +143,7 @@ function App() {
     ocrLanguage: 'eng',
     exportQuality: 'high',
     exportCodec: 'h264',
+    exportResolution: 'original',
     includeAudio: true,
     scanInterval: 30,
     motionThreshold: 30,
@@ -210,6 +211,17 @@ function App() {
     stage: '',
     eta: ''
   });
+
+  // Cancel confirmation dialog state - two-step flow
+  // Step 1: "Are you sure?" -> Step 2: "Keep detections?"
+  const [cancelConfirmDialog, setCancelConfirmDialog] = useState<{
+    isOpen: boolean;
+    step: 'confirm' | 'keepDetections';
+    detectionsCount: number;
+  } | null>(null);
+
+  // Track detections found during current scan (for partial results on cancel)
+  const [pendingDetections, setPendingDetections] = useState<Detection[]>([]);
 
   // Blur preview toggle (on by default)
   const [previewBlur, setPreviewBlur] = useState(true);
@@ -356,6 +368,53 @@ function App() {
     setAnalysisProgress(prev => ({ ...prev, isAnalyzing: false }));
   }, []);
 
+  // Cancel export/scan - shows two-step confirmation dialog
+  const handleCancelExportClick = useCallback(() => {
+    console.log('[App] Cancel button clicked, showing confirmation step 1');
+    // Step 1: Show "Are you sure?" confirmation
+    setCancelConfirmDialog({
+      isOpen: true,
+      step: 'confirm',
+      detectionsCount: 0  // Will be updated when we get partial results
+    });
+  }, []);
+
+  // Handle confirming cancel (step 1) - cancel backend and wait for onComplete to show step 2
+  const handleConfirmCancel = useCallback(() => {
+    console.log('[App] User confirmed cancel, stopping backend...');
+    cancelAnalysis();  // Tell Python backend to stop
+    // Close step 1 dialog - step 2 will be shown by onComplete when scan returns with cancelled=true
+    setCancelConfirmDialog(null);
+    // Show temporary message while waiting for backend
+    setToastMessage('⏳ Cancelling...');
+  }, []);
+
+  // Handle keeping partial detections (from step 2)
+  const handleKeepDetections = useCallback(() => {
+    console.log('[App] User chose to keep partial detections');
+    if (pendingDetections.length > 0) {
+      setDetections(prev => [...prev, ...pendingDetections]);
+      setHasUnsavedChanges(true);  // Mark as having unsaved changes
+      setToastMessage(`⏹️ Kept ${pendingDetections.length} detection${pendingDetections.length !== 1 ? 's' : ''}`);
+    } else {
+      setToastMessage('⏹️ Operation cancelled');
+    }
+    setPendingDetections([]);
+    setExportProgress({ isExporting: false, progress: 0, stage: '', eta: '' });
+    setCancelConfirmDialog(null);
+    setTimeout(() => setToastMessage(null), 3000);
+  }, [pendingDetections]);
+
+  // Handle discarding partial detections (from step 2)
+  const handleDiscardDetections = useCallback(() => {
+    console.log('[App] User chose to discard partial detections');
+    setPendingDetections([]);
+    setExportProgress({ isExporting: false, progress: 0, stage: '', eta: '' });
+    setCancelConfirmDialog(null);
+    setToastMessage('⏹️ Operation cancelled');
+    setTimeout(() => setToastMessage(null), 3000);
+  }, []);
+
   // New Project - full reset to idle state
   const handleNewProject = useCallback(() => {
     setMode('idle');
@@ -485,6 +544,7 @@ function App() {
     setDetections(prev => prev.map(d =>
       d.id === detectionId ? { ...d, isRedacted: !d.isRedacted } : d
     ));
+    setHasUnsavedChanges(true);  // Mark as having unsaved changes
   }, []);
 
   // Handle detection time changes from timeline drag
@@ -492,11 +552,13 @@ function App() {
     setDetections(prev => prev.map(d =>
       d.id === detectionId ? { ...d, startTime, endTime } : d
     ));
+    setHasUnsavedChanges(true);  // Mark as having unsaved changes
   }, []);
 
   // Handle detection deletion (irreversible - requires rescan to restore)
   const handleDeleteDetection = useCallback((detectionId: string) => {
     setDetections(prev => prev.filter(d => d.id !== detectionId));
+    setHasUnsavedChanges(true);  // Mark as having unsaved changes
     // Clear selection if deleted detection was selected
     if (selectedDetectionId === detectionId) {
       setSelectedDetectionId(null);
@@ -519,6 +581,7 @@ function App() {
   // Config handlers - sync to Python backend
   const handleWatchListChange = useCallback((items: WatchItem[]) => {
     setWatchList(items);
+    setHasUnsavedChanges(true);  // Mark as having unsaved changes
     // Sync to backend
     const config = {
       watchList: items.filter(i => i.enabled).map(i => i.text),
@@ -532,6 +595,7 @@ function App() {
 
   const handleAnchorsChange = useCallback((newAnchors: Anchor[]) => {
     setAnchors(newAnchors);
+    setHasUnsavedChanges(true);  // Mark as having unsaved changes
     // Sync to backend
     const config = {
       watchList: watchList.filter(i => i.enabled).map(i => i.text),
@@ -639,6 +703,7 @@ function App() {
         console.log('[App] Preset loaded from file:', filePath);
         const fileName = filePath.split(/[/\\]/).pop() || 'preset';
         setToastMessage(`✅ Loaded preset from "${fileName}"`);
+        setHasUnsavedChanges(true);  // Mark as having unsaved changes
       }
     } catch (err) {
       console.error('[App] Error loading preset:', err);
@@ -864,6 +929,7 @@ function App() {
           scanZones: scanZones.filter(z => z.enabled).map(z => ({ start: z.start, end: z.end })),
           codec: appSettings.exportCodec,
           quality: appSettings.exportQuality,
+          resolution: appSettings.exportResolution,
           includeAudio: appSettings.includeAudio,
         },
         outputPath,  // User-selected output path
@@ -943,44 +1009,54 @@ function App() {
           onProgress: (progress, stage) => {
             setExportProgress({ isExporting: true, progress, stage, eta: '' });
           },
-          onComplete: (detectedBlurs) => {
-            setExportProgress({ isExporting: false, progress: 100, stage: 'Scan complete!', eta: '' });
+          onComplete: (detectedBlurs, cancelled) => {
+            // Convert to Detection objects
+            const ocrDetections: Detection[] = (detectedBlurs || []).map((blur, index) => ({
+              id: `scan-${blur.type}-${blur.frame}-${index}`,
+              type: blur.type as 'anchor' | 'watchlist',
+              content: blur.source,
+              confidence: 1.0,
+              bbox: blur.bbox,
+              startTime: blur.time,
+              endTime: blur.end_time || blur.time + 1 / 30,
+              isRedacted: true,
+              trackId: undefined,
+              framePositions: blur.frame_positions  // Motion tracking positions from scan
+            }));
 
-            if (detectedBlurs && detectedBlurs.length > 0) {
-              // Convert to Detection objects
-              const ocrDetections: Detection[] = detectedBlurs.map((blur, index) => ({
-                id: `scan-${blur.type}-${blur.frame}-${index}`,
-                type: blur.type as 'anchor' | 'watchlist',
-                content: blur.source,
-                confidence: 1.0,
-                bbox: blur.bbox,
-                startTime: blur.time,
-                endTime: blur.end_time || blur.time + 1 / 30,
-                isRedacted: true,
-                trackId: undefined,
-                framePositions: blur.frame_positions  // Motion tracking positions from scan
-              }));
-
-              // Replace old OCR/scan detections with new scan results
-              // This prevents old detections with incorrect coordinates from showing
-              setDetections(prev => {
-                // Keep only manual detections (not from OCR/scan)
-                const manualDetections = prev.filter(d =>
-                  !d.id.startsWith('ocr-') && !d.id.startsWith('scan-')
-                );
-                console.log(`[App] Replacing ${prev.length - manualDetections.length} old scan detections with ${ocrDetections.length} new ones`);
-                return [...manualDetections, ...ocrDetections];
+            if (cancelled) {
+              // Scan was cancelled - store as pending and show dialog step 2
+              console.log('[App] Scan cancelled with', ocrDetections.length, 'partial detections');
+              setExportProgress({ isExporting: false, progress: 0, stage: '', eta: '' });
+              setPendingDetections(ocrDetections);
+              setCancelConfirmDialog({
+                isOpen: true,
+                step: 'keepDetections',
+                detectionsCount: ocrDetections.length
               });
-
-              setToastMessage(`✅ Scan complete! Found ${detectedBlurs.length} blur regions. Toggle any false positives, then export.`);
             } else {
-              setToastMessage('✅ Scan complete! No blur regions detected. Add manual blur boxes or check your anchors.');
+              // Normal completion
+              setExportProgress({ isExporting: false, progress: 100, stage: 'Scan complete!', eta: '' });
+
+              if (ocrDetections.length > 0) {
+                // Replace old OCR/scan detections with new scan results
+                setDetections(prev => {
+                  const manualDetections = prev.filter(d =>
+                    !d.id.startsWith('ocr-') && !d.id.startsWith('scan-')
+                  );
+                  console.log(`[App] Replacing ${prev.length - manualDetections.length} old scan detections with ${ocrDetections.length} new ones`);
+                  return [...manualDetections, ...ocrDetections];
+                });
+                setToastMessage(`✅ Scan complete! Found ${ocrDetections.length} blur regions. Toggle any false positives, then export.`);
+                setHasUnsavedChanges(true);  // Mark as having unsaved changes
+              } else {
+                setToastMessage('✅ Scan complete! No blur regions detected. Add manual blur boxes or check your anchors.');
+              }
+
+              // Auto-switch to detections tab to show results
+              setSidebarTab('detections');
+              setTimeout(() => setToastMessage(null), 5000);
             }
-
-            // Auto-switch to detections tab to show results
-            setSidebarTab('detections');
-
-            setTimeout(() => setToastMessage(null), 5000);
           },
           onError: (error) => {
             setExportProgress({ isExporting: false, progress: 0, stage: '', eta: '' });
@@ -1807,7 +1883,7 @@ function App() {
             <button
               className="btn btn-ghost"
               style={{ marginTop: 'var(--space-md)' }}
-              onClick={() => setExportProgress({ isExporting: false, progress: 0, stage: '', eta: '' })}
+              onClick={handleCancelExportClick}
             >
               Cancel
             </button>
@@ -1826,6 +1902,73 @@ function App() {
       {toastMessage && (
         <div className="toast-notification">
           {toastMessage}
+        </div>
+      )}
+
+      {/* Cancel Confirmation Dialog - Two Step Flow */}
+      {cancelConfirmDialog?.isOpen && (
+        <div className="export-progress-overlay">
+          <div className="export-progress-card" style={{ maxWidth: 400 }}>
+            {/* Step 1: Are you sure you want to cancel? */}
+            {cancelConfirmDialog.step === 'confirm' && (
+              <>
+                <div className="export-progress-header">
+                  <h3>⏹️ Cancel Operation?</h3>
+                </div>
+                <div className="export-progress-stage" style={{ marginBottom: 'var(--space-md)' }}>
+                  Are you sure you want to cancel?
+                </div>
+                <div style={{ display: 'flex', gap: 'var(--space-sm)', justifyContent: 'center' }}>
+                  <button
+                    className="btn btn-ghost"
+                    onClick={handleConfirmCancel}
+                  >
+                    Yes, Cancel
+                  </button>
+                  <button
+                    className="btn btn-primary"
+                    onClick={() => setCancelConfirmDialog(null)}
+                  >
+                    Continue
+                  </button>
+                </div>
+              </>
+            )}
+
+            {/* Step 2: Keep or discard partial detections? */}
+            {cancelConfirmDialog.step === 'keepDetections' && (
+              <>
+                <div className="export-progress-header">
+                  <h3>📋 Keep Detections?</h3>
+                </div>
+                <div className="export-progress-stage" style={{ marginBottom: 'var(--space-md)' }}>
+                  {cancelConfirmDialog.detectionsCount > 0 ? (
+                    <>
+                      <strong>{cancelConfirmDialog.detectionsCount}</strong> detection{cancelConfirmDialog.detectionsCount !== 1 ? 's' : ''} found before cancelling.
+                    </>
+                  ) : (
+                    'No detections found before cancelling.'
+                  )}
+                </div>
+                <div style={{ display: 'flex', gap: 'var(--space-sm)', justifyContent: 'center' }}>
+                  {cancelConfirmDialog.detectionsCount > 0 && (
+                    <button
+                      className="btn btn-primary"
+                      onClick={handleKeepDetections}
+                    >
+                      Keep Detections
+                    </button>
+                  )}
+                  <button
+                    className={cancelConfirmDialog.detectionsCount > 0 ? "btn btn-ghost" : "btn btn-primary"}
+                    onClick={handleDiscardDetections}
+                  >
+                    {cancelConfirmDialog.detectionsCount > 0 ? 'Discard All' : 'OK'}
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
         </div>
       )}
 
@@ -1850,7 +1993,7 @@ function App() {
             <div className="about-content">
               <img src="/assets/icon.png" alt="ScreenSafe" className="about-icon" />
               <h3>ScreenSafe</h3>
-              <p className="about-version">Version 1.1.0</p>
+              <p className="about-version">Version 1.1.2</p>
               <p className="about-tagline">Privacy-first video redaction tool</p>
               <p className="about-description">
                 Automatically detect and blur sensitive information in screen recordings before sharing.

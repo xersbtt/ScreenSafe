@@ -5,6 +5,31 @@ All notable changes to ScreenSafe will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.2] - 2026-01-20
+
+### Added
+- **Export Resolution Selection**: New dropdown to choose output resolution (Original, 1080p, 720p, 480p) when exporting.
+- **Export Quality Bitrate Labels**: Quality presets now show approximate bitrates (~2 Mbps, ~4 Mbps, ~8 Mbps) for clearer selection.
+- **Cancel Confirmation Dialog**: Cancelling a scan or export now shows a two-step confirmation:
+  1. "Are you sure?" with Continue/Cancel options
+  2. "Keep Detections?" showing partial results count with Keep/Discard options
+- **Partial Results on Cancel**: When a scan is cancelled, detected blurs found before cancellation can be kept or discarded.
+
+### Fixed
+- **Cancel Button Not Stopping Backend**: Fixed issue where clicking Cancel during scan/export only reset the UI but didn't stop the Python backend. Now properly sends cancel signal and waits for partial results.
+- **Unsaved Changes Detection**: Fixed missing prompts when closing app after:
+  - Loading a preset
+  - Running a scan and keeping detections
+  - Modifying watch list or anchors
+  - Toggling detection redaction
+  - Changing detection times via timeline drag
+  - Deleting detections
+
+### Changed
+- **Backend Cancellation Architecture**: Removed `asyncio.CancelledError` approach in favor of cooperative cancellation via `_cancelled` flag, allowing thread pool operations to complete gracefully with partial results.
+
+---
+
 ## [1.1.1] - 2026-01-16
 
 ### Added

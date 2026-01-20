@@ -26,6 +26,9 @@ from .models import Detection, VideoInfo, BoundingBox
 
 logger = logging.getLogger(__name__)
 
+# Global reference to current export/scan operation for cancellation support
+_current_operation: 'OptimizedVideoExporter | None' = None
+
 # Blur parameters
 BLUR_KERNEL = (51, 51)
 BLUR_SIGMA = 30
@@ -337,9 +340,10 @@ class OptimizedVideoExporter:
                blur_strength: int = 51,
                use_cache: bool = True,
                use_gpu: bool = True,
-               codec: str = 'h264',
-               quality: str = 'high',
-               include_audio: bool = True) -> bool:
+                codec: str = 'h264',
+                quality: str = 'high',
+                resolution: str = 'original',
+                include_audio: bool = True) -> bool:
         """
         Export video with blurs applied.
         
@@ -370,7 +374,21 @@ class OptimizedVideoExporter:
         self._prev_frame = None
         self._codec = codec
         self._quality = quality
+        self._resolution = resolution
         self._enable_regex_patterns = False  # Export uses pre-defined detections
+        
+        # Calculate target resolution based on resolution setting
+        self._target_width = self.video_info.width
+        self._target_height = self.video_info.height
+        if resolution == '1080p':
+            self._target_width = 1920
+            self._target_height = 1080
+        elif resolution == '720p':
+            self._target_width = 1280
+            self._target_height = 720
+        elif resolution == '480p':
+            self._target_width = 854
+            self._target_height = 480
         
         # Initialize OCR cache
         self._cache = OCRCache(self.video_path) if use_cache else None
@@ -571,11 +589,15 @@ class OptimizedVideoExporter:
         
         logger.info(f"Selected encoder: {encoder} for codec {codec}")
         
-        # Calculate output dimensions (half for preview mode)
-        out_width = self.video_info.width // 2 if self._preview_mode else self.video_info.width
-        out_height = self.video_info.height // 2 if self._preview_mode else self.video_info.height
+        # Calculate output dimensions - use target resolution (or half for preview mode)
+        if self._preview_mode:
+            out_width = self.video_info.width // 2
+            out_height = self.video_info.height // 2
+        else:
+            out_width = self._target_width
+            out_height = self._target_height
         
-        logger.info(f"FFmpeg output dimensions: {out_width}x{out_height} (preview={self._preview_mode})")
+        logger.info(f"FFmpeg output dimensions: {out_width}x{out_height} (preview={self._preview_mode}, resolution={self._resolution})")
         
         # Add h265 tag for Apple QuickTime compatibility
         if codec == 'h265':
@@ -629,10 +651,15 @@ class OptimizedVideoExporter:
     
     def _write_frame(self, writer, frame: np.ndarray):
         """Write frame to video writer."""
-        # Resize for preview mode (half resolution)
+        # Resize for preview mode (half resolution) or target resolution
         if self._preview_mode:
             new_width = self.video_info.width // 2
             new_height = self.video_info.height // 2
+            frame = cv2.resize(frame, (new_width, new_height), interpolation=cv2.INTER_AREA)
+        elif self._resolution != 'original':
+            # Resize to target resolution (720p, 1080p, 480p)
+            new_width = self._target_width
+            new_height = self._target_height
             frame = cv2.resize(frame, (new_width, new_height), interpolation=cv2.INTER_AREA)
         
         # Debug log on first frame
@@ -1027,6 +1054,17 @@ class OptimizedVideoExporter:
         self._cancelled = True
 
 
+def cancel_current_operation() -> None:
+    """Cancel the currently running export/scan operation.
+    
+    This is called from main.py when the user clicks Cancel.
+    """
+    global _current_operation
+    if _current_operation is not None:
+        logger.info("Cancelling current operation...")
+        _current_operation.cancel()
+
+
 def export_video_optimized(video_path: str,
                            output_path: str,
                            detections: List[Detection],
@@ -1043,10 +1081,13 @@ def export_video_optimized(video_path: str,
                            use_gpu: bool = True,
                            codec: str = 'h264',
                            quality: str = 'high',
+                           resolution: str = 'original',
                            include_audio: bool = True) -> bool:
     """
     Convenience function to export a redacted video using optimized exporter.
     """
+    global _current_operation
+    
     if video_info is None:
         cap = cv2.VideoCapture(video_path)
         if not cap.isOpened():
@@ -1063,23 +1104,29 @@ def export_video_optimized(video_path: str,
         cap.release()
     
     exporter = OptimizedVideoExporter(video_path, video_info)
-    return exporter.export(
-        output_path, 
-        detections, 
-        anchors,
-        watch_list,
-        scan_interval,
-        motion_threshold,
-        ocr_scale,
-        scan_zones,
-        progress_callback, 
-        blur_strength,
-        use_cache,
-        use_gpu,
-        codec,
-        quality,
-        include_audio
-    )
+    _current_operation = exporter  # Track for cancellation
+    
+    try:
+        return exporter.export(
+            output_path, 
+            detections, 
+            anchors,
+            watch_list,
+            scan_interval,
+            motion_threshold,
+            ocr_scale,
+            scan_zones,
+            progress_callback, 
+            blur_strength,
+            use_cache,
+            use_gpu,
+            codec,
+            quality,
+            resolution,
+            include_audio
+        )
+    finally:
+        _current_operation = None
 
 
 def preview_export_video(video_path: str,
@@ -1171,6 +1218,8 @@ def scan_video(video_path: str,
     """
     logger.info(f"Starting video scan: {video_path}")
     
+    global _current_operation
+    
     # Get video info if not provided
     if video_info is None:
         cap = cv2.VideoCapture(video_path)
@@ -1189,6 +1238,7 @@ def scan_video(video_path: str,
     
     # Create scanner (reuses exporter's OCR logic)
     scanner = OptimizedVideoExporter(video_path, video_info)
+    _current_operation = scanner  # Track for cancellation
     scanner._anchors = anchors or []
     scanner._watch_list = [w.lower() for w in (watch_list or [])]
     scanner._scan_interval = scan_interval
@@ -1233,6 +1283,11 @@ def scan_video(video_path: str,
     
     try:
         while True:
+            # Check for cancellation
+            if scanner._cancelled:
+                logger.info("Scan cancelled")
+                break
+            
             ret, frame = cap.read()
             if not ret:
                 break
@@ -1355,6 +1410,7 @@ def scan_video(video_path: str,
     finally:
         cap.release()
         scanner._ocr_processor.shutdown()
+        _current_operation = None  # Clear global reference
         
         # Save cache
         if scanner._cache:
@@ -1376,8 +1432,14 @@ def scan_video(video_path: str,
     consolidated_sources = set(c['source'] for c in consolidated)
     logger.info(f"Consolidated sources: {consolidated_sources}")
     
-    if progress_callback:
-        progress_callback(100, "Scan complete!")
+    # Check if scan was cancelled
+    was_cancelled = scanner._cancelled
     
-    return {'success': True, 'detected_blurs': consolidated}
+    if progress_callback:
+        if was_cancelled:
+            progress_callback(0, f"Scan cancelled - found {len(consolidated)} partial results")
+        else:
+            progress_callback(100, "Scan complete!")
+    
+    return {'success': not was_cancelled, 'detected_blurs': consolidated, 'cancelled': was_cancelled}
 
