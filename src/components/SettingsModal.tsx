@@ -149,9 +149,9 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                             className="settings-select"
                         >
                             <option value="original">Original (source resolution)</option>
-                            <option value="1080p">1080p (1920×1080)</option>
-                            <option value="720p">720p (1280×720)</option>
-                            <option value="480p">480p (854×480)</option>
+                            <option value="1080p">1080p (scales shortest side to 1080)</option>
+                            <option value="720p">720p (scales shortest side to 720)</option>
+                            <option value="480p">480p (scales shortest side to 480)</option>
                         </select>
                     </div>
 

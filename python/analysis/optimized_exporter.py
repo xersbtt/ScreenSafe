@@ -377,18 +377,33 @@ class OptimizedVideoExporter:
         self._resolution = resolution
         self._enable_regex_patterns = False  # Export uses pre-defined detections
         
-        # Calculate target resolution based on resolution setting
+        # Calculate target resolution while preserving aspect ratio
+        # Scale based on shorter dimension to avoid stretching non-16:9 videos
         self._target_width = self.video_info.width
         self._target_height = self.video_info.height
+        
+        source_aspect = self.video_info.width / self.video_info.height
+        
         if resolution == '1080p':
-            self._target_width = 1920
-            self._target_height = 1080
+            target_short_side = 1080
         elif resolution == '720p':
-            self._target_width = 1280
-            self._target_height = 720
+            target_short_side = 720
         elif resolution == '480p':
-            self._target_width = 854
-            self._target_height = 480
+            target_short_side = 480
+        else:
+            target_short_side = None
+        
+        if target_short_side:
+            if source_aspect >= 1:  # Landscape or square
+                self._target_height = target_short_side
+                self._target_width = int(target_short_side * source_aspect)
+            else:  # Portrait
+                self._target_width = target_short_side
+                self._target_height = int(target_short_side / source_aspect)
+            
+            # Ensure even dimensions (required for video encoding)
+            self._target_width = self._target_width + (self._target_width % 2)
+            self._target_height = self._target_height + (self._target_height % 2)
         
         # Initialize OCR cache
         self._cache = OCRCache(self.video_path) if use_cache else None
